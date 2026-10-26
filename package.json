@@ -1,0 +1,14 @@
+{
+  "name": "hibi-addon-starter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test"
+  }
+}
