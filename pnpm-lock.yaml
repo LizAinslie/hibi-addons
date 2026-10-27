@@ -14,6 +14,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      lz-string:
+        specifier: ^1.5.0
+        version: 1.5.0
       postcss:
         specifier: ^8.5.31
         version: 8.5.31
@@ -1010,6 +1013,10 @@ packages:
 
   loose-envify@1.4.0:
     resolution: {integrity: sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==}
+    hasBin: true
+
+  lz-string@1.5.0:
+    resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
     hasBin: true
 
   marked@16.4.2:
@@ -2232,6 +2239,8 @@ snapshots:
   loose-envify@1.4.0:
     dependencies:
       js-tokens: 4.0.0
+
+  lz-string@1.5.0: {}
 
   marked@16.4.2: {}
 

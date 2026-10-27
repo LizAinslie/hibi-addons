@@ -1,309 +1,372 @@
-# Excalidraw document format + editor tab
+# Excalidraw addon: native JSON + Obsidian `.excalidraw.md`
+
+## Status
+
+Phase 1 is implemented and verified in Hibi:
+
+- `addons/excalidraw/` installable package.
+- Native `.excalidraw` documents, full-size Excalidraw editor tab, auto-open, autosave, undo/redo, local fonts, offline operation.
+- Source: `src/excalidraw/`; build: `scripts/build-excalidraw.mjs`; tests: `test/excalidraw.test.mjs`.
+- Verified with a real Hibi Electron smoke test: draw/text/save/undo/redo, no external requests, no CSP errors.
+
+Phase 2 adds Obsidian `.excalidraw.md` support and makes it the canonical interoperable drawing format. Native `.excalidraw` remains supported for standalone JSON, import, and export.
 
 ## Goal
 
-Add an installable Hibi addon that recognizes `.excalidraw` files as Hibi documents. The document source is standard Excalidraw JSON stored by Hibi. A full-size addon tab hosts the real Excalidraw editor and reads/writes the document through Hibi's `context.documents` API.
+A user can point Hibi at an Obsidian vault, open a `.excalidraw.md` file, see the real Excalidraw canvas, edit it, and save it back as a valid Obsidian Excalidraw Markdown file:
 
-## Constraints and decisions
+- Header/frontmatter preserved.
+- `[[note]]` links still work in Obsidian and are indexed by Hibi.
+- Text elements, element links, embedded files, and compressed/uncompressed drawing data round-trip.
+- New Hibi drawings default to `.excalidraw.md`.
 
-- Hibi's documented document-format API only permits a **read-only preview**. Custom formats cannot own the editable normal pane. Do not make `Preview` rewrite source.
-- The editable canvas is a `context.views.register({ location: 'tab' })` view, opened automatically when a `.excalidraw` file is opened.
-- Hibi is the only storage. Do not keep scene JSON in addon storage.
-- Target Hibi API v2, installed extension package, `capabilities: ["ui"]`.
-- Package everything needed at install time. Hibi does not run builds or install dependencies.
-- Reference checkout: `/mnt/dev/repos/github.com/schmayterling/hibi` (`src/addons/api.ts`, `docs/ai-agents/development/document-formats.md`, `docs/ai-agents/development/addons/settings-and-sidebar-views.md`). Do not modify it.
-- `.excalidraw` files remain readable in source view when the addon is disabled.
+## Hard constraints
 
-## Architecture
+- Hibi matches the final filename extension and rejects dotted extensions. `.excalidraw.md` is always a **Markdown document** in Hibi. Do not try to register it with `registerDocumentFormat`.
+- Hibi's documented format API only permits a read-only Preview. The editable canvas remains the existing full-size addon tab.
+- Hibi documents are capped at 2 MiB UTF-8. Check the whole composed Markdown.
+- The Obsidian Excalidraw plugin is GPL-3.0. Implement the file format clean-room from the file structure and public behavior. Do not copy plugin code, regexes, or constants.
+- Hibi's Obsidian importer converts wiki links outside fenced code blocks. That includes `# Text Elements` and `# Embedded Files`. Direct vault opening avoids conversion; imported copies need repair or a core-importer exception.
+- Hibi addons do not receive the open document's workspace-relative path. Resolve it through `workspace.index()` by basename for now; upstream should add `path` to `DocumentState`/`OpenDocumentMetadata`.
+- Installed addons cannot register native importers or addon windows.
 
-### Document format
+## Detection
 
-Register from `start(context)`:
+Add `detectExcalidrawDocument(name, source)`:
 
-```js
-context.editor.registerDocumentFormat({
-  id: 'excalidraw',
-  name: 'Excalidraw',
-  extensions: ['excalidraw'],
-  views: ['side-by-side', 'markdown'],
-  Preview, // read-only SVG/card + "Edit drawing" button
-  render,  // optional async SVG for documentation export
-})
+- `native-json`: name ends with `.excalidraw`.
+- `obsidian-markdown`: name ends with `.excalidraw.md`, or the source has YAML frontmatter with `excalidraw-plugin` and a parseable `Drawing` section.
+- `unsupported`: everything else.
+
+Do not auto-open arbitrary `.md` files just because they contain a `# Drawing` heading. Require the filename suffix or the frontmatter key.
+
+Update:
+
+- `isExcalidrawName` / `maybeAutoOpen` in `src/excalidraw/index.js`.
+- The editor-tab `Editor` component to choose the native or Obsidian adapter.
+- The auto-open dedupe set remains keyed by `tabId`; opening a `.excalidraw.md` selects the Excalidraw tab once per document, not on every focus change.
+
+## Obsidian file format
+
+Support both current and older structures:
+
+- Optional YAML frontmatter.
+- Optional `# Excalidraw Data` heading.
+- `# Text Elements` or `## Text Elements`; text blocks end with 8-character `^blockid` refs.
+- `# Element Links` or `## Element Links`; `elementId: link` entries.
+- `# Embedded Files` or `## Embedded Files`; `fileId: [[path]]`, URL, or equation entries.
+- `# Drawing` or `## Drawing` inside an optional `%%` comment.
+- Fenced code block with language `json` or `compressed-json`.
+- CRLF, BOM, and missing optional sections are tolerated.
+- Uncompressed JSON is read directly.
+- `compressed-json` is LZString base64: strip whitespace, `decompressFromBase64`. On save, `compressToBase64` and split into 256-character chunks separated by `\n\n`. Add `lz-string` (MIT) to the bundle.
+- Preserve the existing heading level, section order, compression mode, and optional sections. New files use a sample-compatible structure:
+
+```md
+---
+excalidraw-plugin: parsed
+tags: [excalidraw]
+---
+
+# Text Elements
+...
+
+# Element Links
+...
+
+# Embedded Files
+...
+
+%%
+# Drawing
+```json
+{ ... }
+```
+%%
 ```
 
-- `editing` is omitted; this is not Markdown.
-- `codeLanguage: 'json'` only if the host resolves JSON highlighting; otherwise omit.
-- `Preview` reads `value` and never calls an edit API.
-- `Preview` may open the editor tab through the captured `context.views` registration.
+New files default to uncompressed JSON for readability and diffability. Preserve compressed mode when editing an existing compressed file. Add a command later if users want to toggle.
 
-### Editor tab
+## Parser / writer module
 
-Register:
+Add a pure module, e.g. `src/excalidraw/obsidian.js`:
 
 ```js
-context.views.register({
-  id: 'canvas',
-  label: 'Excalidraw',
-  location: 'tab',
-  lifetime: 'visible',
-  Content: EditorView,
-})
+parseObsidianDrawing(source) // -> { header, sections, drawingBlock, trailing, scene, mode, errors }
+composeObsidianDrawing(parsed, scene, extras) // -> updated Markdown
 ```
 
-- Open with `binding: 'follow'` so it follows the active document.
-- Auto-open only when a `.excalidraw` document **opens**, not every time it gains focus:
-  - On start, `context.documents.listOpen()` and open if the active document is `.excalidraw`.
-  - Subscribe to `context.documents.subscribe`; open for `kind: 'opened'` with a `.excalidraw` name.
-  - The Preview button and a command always open/focus it.
-- Do not auto-open on ordinary document focus changes; users must still be able to view the source/split tab.
-- `lifetime: 'visible'` ensures the canvas unmounts and flushes when hidden. Reload from source on return.
+Rules:
 
-### Source synchronization
+- The **header** is everything before the first generated section (`# Excalidraw Data`, `Text Elements`, `Element Links`, `Embedded Files`, or `Drawing`). Preserve it byte-for-byte, including frontmatter and user notes.
+- Generated sections are regenerated from the scene on save.
+- Preserve trailing content after the drawing block, if present.
+- Apply a minimal edit (`minimalChange`) to the composed Markdown; never replace the whole document blindly.
+- If the structure cannot be identified, do not write; show an error with source-view access.
 
-Canonical flow:
+Load order:
 
-1. Load: `document.markdown` -> `JSON.parse` -> validate -> Excalidraw `restore` -> `initialData`.
-2. Edit: Excalidraw `onChange(elements, appState, files)` -> debounce about 400 ms -> `serializeAsJSON(elements, appState, files, 'local')`.
-3. Persist:
-   - Find target with `context.documents.listOpen()` matching `document.tabId`.
-   - `readSource(target)` for the latest `VersionedDocumentTarget` and exact `source`.
-   - Apply one full/partial replacement with `context.documents.applyEdits`.
-   - Use a fresh `crypto.randomUUID()` request ID per attempt.
-4. Echo handling: store the serialized JSON as `lastSyncedSource`; ignore the resulting `document.markdown` prop when it equals that value.
-5. External change: if `document.markdown !== lastSyncedSource`, parse and call `api.updateScene(...)` (or remount after a document switch). Never overwrite silently.
-6. Flush pending edits:
-   - On component unmount/visibility loss.
-   - Before Hibi `save`, `saveAs`, and `close-tab` via `context.patches.before(context.app, 'runAction', ...)`.
-   - On addon `stop()`.
-   - Apply synchronously and report failures; do not drop canvas changes silently.
+1. Parse frontmatter and drawing block.
+2. Parse `# Text Elements` and apply it to the scene. The Markdown text section is authoritative in Obsidian.
+3. Parse `# Element Links` and apply links.
+4. Parse `# Embedded Files` and load attachments.
+5. Fall back to scene JSON text/links for sections that are absent.
 
-Use a minimal replacement (common prefix/suffix of old/new JSON) instead of always replacing the entire source. Keep `expectedText` exact and avoid splitting surrogate pairs.
+Save order:
 
-Hibi's Save action does not target the bound document while a full-size addon tab is active. Persist through `context.documents.save()`:
-- Debounced auto-save after an applied edit.
-- Immediate save on unmount/stop and when Hibi's Save command runs.
-- Intercept `runAction('save')` while an Excalidraw session is mounted so Hibi saves the drawing, not an unrelated draft.
+1. Normalize IDs.
+2. Serialize scene.
+3. Externalize new files.
+4. Regenerate text/element/file sections.
+5. Compose header + sections + drawing block + trailing content.
+6. Apply the minimal edit through the existing document sync.
 
-Keep Hibi's dirty state / autosave semantics otherwise. Do not call `documents.save()` from `Preview`.
+## Text elements and IDs
 
-### Undo/redo
+- Obsidian treats `# Text Elements` as authoritative. Hibi must read it, not just the JSON.
+- Parse block refs with `^([A-Za-z0-9_-]{8})`; text is everything since the previous block ref.
+- On load:
+  - Plain text becomes `text`, `originalText`, and `rawText`.
+  - A text block that is exactly a wiki link (`[[target]]`, `[[target|alias]]`, `[[target#heading]]`) sets `element.link` and displays the target text.
+  - Inline Markdown formatting is preserved as raw text; full Markdown rendering inside canvas text is out of scope.
+- On save:
+  - Emit one block per non-deleted text element in scene order.
+  - If `element.link` is a wiki link and the raw text does not already contain it, emit the link as the block text.
+  - If the link is a URL, emit the raw text and add an `# Element Links` entry.
+  - Append `^id`.
+- Ensure every text element and every linked non-text element has a valid 8-character block-ref ID before writing sections.
+- Deterministic remap: hash the old ID to `[A-Za-z0-9_-]{8}`, resolve collisions, then update:
+  - `element.id`
+  - all `boundElements[].id`
+  - `containerId`
+  - `startBinding.elementId` / `endBinding.elementId`
+  - any other scene field that references element IDs
+- Do not remap unrelated elements. If a reference cannot be updated safely, refuse to save and show an error.
 
-Hibi intercepts Ctrl/Cmd+Z before the renderer and calls `document.execCommand`. Excalidraw would otherwise never see undo/redo.
+## Embeddings and attachments
 
-- Patch `Document.prototype.execCommand` with `context.patches.instead`.
-- Only intercept `undo`/`redo` when `document.activeElement` is inside a registered Excalidraw container.
-- Dispatch a synthetic `keydown` on the active element inside the Excalidraw container:
-  - undo: `z` with Ctrl (or Cmd on macOS)
-  - redo: `z` with Ctrl/Cmd + Shift
-- Return without calling `next` when dispatched; otherwise call `next`.
-- Remove the patch on `stop()`.
-- Verify source-pane and text-editing undo are unchanged.
+Follow Hibi's policy, not Obsidian's attachment-folder setting:
 
-### New drawing command
+- New files go to `<drawing folder>/assets/`.
+- Use `workspace.createBinary(target, path, bytes)`.
+- Name files `Pasted image <timestamp>.<ext>` or a sanitized source name; add `-2`, `-3` on collision.
+- Write `# Embedded Files` entries as `fileId: [[assets/<name>]]`.
+- After externalizing, clear the data URLs from the scene's `files` map, matching Obsidian Excalidraw. Do not keep a second copy in JSON.
+- On load, resolve `# Embedded Files` entries relative to the drawing:
+  - Local paths: `workspace.readBinary`; convert bytes to a data URL for Excalidraw.
+  - Remote URLs: do not fetch; keep the entry and show a broken/placeholder image.
+  - Equations and Markdown-image custom elements are preserved but not rendered in phase 1.
+- Preserve existing entries whose files cannot be resolved; never delete user attachments.
+- `# Embedded Files` may be inside `%%`; preserve the comment wrapper.
+- If the drawing's folder cannot be resolved uniquely, fall back to a workspace-root `assets/` folder and use a workspace-root link; show a notice.
 
-- Command `new-drawing`: requires an open workspace.
-- Build `WorkspaceTarget` from `context.workspace.get()`.
-- Try `Untitled.excalidraw`, `Untitled 2.excalidraw`, etc. with `context.workspace.createText`.
-- Write a standard blank scene (`type`, `version: 2`, `elements: []`, `appState`, `files: {}`).
-- `context.workspace.openFile(path)`; the `opened` event auto-opens the editor tab.
-- If no workspace is open, notify the user to open one.
+## Links
 
-### Commands
+- Pass an `onLinkOpen` handler to Excalidraw and call `event.preventDefault()`.
+- Preserve the original link string in the scene and in generated Markdown.
+- Resolve `[[target]]` / `[[target#heading]]` links through Hibi:
+  - Preferred: `window.hibi.openDocumentLink('obsidian-wiki:' + encodeURIComponent(target), activeRevision)` when the active document revision matches the drawing.
+  - Fallback: resolve by basename/path through `workspace.index()` and call `workspace.openFile(path)`.
+- HTTP/HTTPS/mailto links use Hibi's external-link handling when available.
+- The `# Text Elements` section stays outside fenced code so Hibi's Markdown graph indexes the `[[...]]` links and backlinks.
+- The canvas-tab editor is the primary view. The Markdown tab may still show generated text; do not rewrite Hibi's Markdown renderer.
 
-- `open-editor`: open/focus the Excalidraw tab for the active `.excalidraw` document.
-- `new-drawing`: create and open a drawing in the current workspace.
-- Optionally `copy-drawing-json` for recovery, using `navigator.clipboard.writeText` if available.
+## Editor adapters and sync
 
-### Preview and export
+Refactor the current editor into an adapter boundary:
 
-- `Preview`: parse and render a static SVG with Excalidraw's `exportToSvg` in a lazily imported module; debounce source changes. Fall back to a card with element/file counts and an "Edit drawing" button if export fails.
-- Never write source from `Preview`.
-- `render(source, documentId?)`: use the same SVG helper for documentation export. Hibi sanitizes the HTML. If fonts/workers fail under CSP, return a safe summary and mark SVG export as a follow-up.
+```js
+loadDocument(source, name) -> { scene, unsupported? }
+serializeDocument(scene, context) -> { source, extras }
+```
 
-### Excalidraw UI policy
+- `native-json`: current `parseScene` + `serializeAsJSON` behavior.
+- `obsidian-markdown`: `parseObsidianDrawing` / `composeObsidianDrawing`.
+- Keep the existing debounce (about 400 ms), minimal edit, echo suppression, external-change handling, flush-before-save/close, auto-save, and undo/redo bridge.
+- For Obsidian Markdown, the external-change check compares the whole Markdown source, not just the JSON block.
+- If the user edits the Markdown source while the canvas is hidden, reload the scene on return.
+- If the source changes externally while the canvas is dirty, show a conflict; do not overwrite.
+- Check the 2 MiB limit on the composed Markdown before applying or saving.
+- Never call `documents.save()` from the Preview.
 
-- Theme follows `context.colorschemes.getActive().appearance`; subscribe to changes.
-- Disable collaboration, AI, and all network-dependent features. Hibi blocks arbitrary network.
-- `UIOptions`: disable `loadScene` and `saveToActiveFile`; decide on local export after the spike. Keep only features that work fully offline under Hibi's CSP.
-- Hide or trim the main menu if it exposes external links or unsupported actions.
-- Do not implement Excalidraw libraries from the network.
+## Commands and new drawings
 
-## Bundling and packaging
+- `New Excalidraw drawing` creates `Untitled.excalidraw.md` in the current workspace, with the standard header, empty text/links/files sections, and a blank uncompressed JSON scene.
+- Add `New standalone Excalidraw JSON file` for `Untitled.excalidraw`.
+- `Open Excalidraw editor` works for both native and Obsidian drawings.
+- Add `Repair Obsidian Excalidraw files` (see below).
 
-### Source layout (not installed)
+## Vault import and repair
+
+Direct workspace:
+
+- Point Hibi at the Obsidian vault directly. `.excalidraw.md` files open as Markdown and auto-open the canvas tab. No conversion.
+
+Hibi's Obsidian importer:
+
+- Imported `.excalidraw.md` files are copied as Markdown.
+- The importer may convert `[[...]]` links in the generated text/file sections to relative Markdown links. The JSON block is safe.
+- Add a repair command that:
+  1. Finds workspace pages ending `.excalidraw.md` or with `excalidraw-plugin` frontmatter.
+  2. Parses the scene from the drawing block.
+  3. Regenerates `# Text Elements`, `# Element Links`, and `# Embedded Files` from the scene, restoring wiki links.
+  4. Preserves the header and trailing content.
+  5. Uses `workspace.updateText` for closed files and the document API for open files; respect file versions and conflicts.
+- Report files repaired, skipped, and failed.
+
+Recommended Hibi core changes (separate from this addon):
+
+- Expose the open document's workspace-relative path to addons.
+- Make `import-obsidian` skip wiki-link conversion inside `.excalidraw.md` generated sections or preserve `%%` content.
+- Longer term, allow content-based or dotted-extension document formats.
+
+## Files to add/change
 
 ```text
-src/excalidraw/
-  index.js            addon factory, manifest wiring, format, view, commands, preview
-  editor.jsx          Excalidraw editor tab
-  scene.js            pure parse/serialize/validate/minimal-edit helpers
-  preview.jsx         read-only preview component
-  render.js           lazy exportToSvg helper
-  shims/react.js      host React named exports
-  shims/jsx-runtime.js
-  shims/react-dom.js  createPortal + best-effort flushSync
-  styles/host.css
-scripts/build-excalidraw.mjs
-scripts/check-excalidraw-package.mjs
+src/excalidraw/obsidian.js          parser/writer, compression, sections, IDs
+src/excalidraw/obsidian-links.js    link resolution helpers
+src/excalidraw/obsidian-files.js    attachment read/write, path resolution
+src/excalidraw/adapters.js          native vs Obsidian load/serialize
+src/excalidraw/editor.jsx           adapter boundary, onLinkOpen, conflicts
+src/excalidraw/index.js             detection, auto-open, commands, repair
+src/excalidraw/scene.js             shared minimal edit/validation helpers
+test/obsidian-format.test.mjs       fixtures and round-trip tests
+test/excalidraw.test.mjs            detection/regression tests
+addons/excalidraw/README.md         usage, limits, Obsidian behavior
+addons/excalidraw/hibi-addon.json   version bump, command metadata
+scripts/build-excalidraw.mjs        bundle lz-string, package checks
 ```
-
-### Build
-
-- Add dev dependencies: `@excalidraw/excalidraw@0.18.1`, `esbuild`, `postcss`, `postcss-prefix-selector`.
-- Build output into `addons/excalidraw/`:
-  - `index.js`: small entry, no Excalidraw import at startup.
-  - `view.js` + chunks: lazily imported Excalidraw bundle.
-  - `excalidraw.css`: copied `dist/prod/index.css`, prefixed/scoped, plus host styles.
-  - `fonts/`: copied `dist/prod/fonts` preserving paths.
-- Alias `react`, `react/jsx-runtime`, `react/jsx-dev-runtime`, `react-dom`, and `react-dom/client` to local shims with an esbuild plugin resolving absolute paths.
-- `start(context)` sets, before any dynamic import:
-  - `globalThis.__hibiExcalidrawReact = React` from the SDK factory.
-  - `window.EXCALIDRAW_ASSET_PATH = new URL('./', import.meta.url).href`.
-- Shims read the global at module evaluation. Never bundle a second React.
-- React shim exports every React 19 name Excalidraw imports; add missing names from build errors.
-- ReactDOM shim: implement `createPortal` with the standard `Symbol.for('react.portal')` object; `flushSync = fn => fn()` is acceptable initially. If it breaks, bundle ReactDOM 19.3.1 with `react` still aliased to the host shim, never a second React.
-- Scope CSS to `.hibi-excalidraw-root` with PostCSS:
-  - Prefix all selectors, including global `:root`, `body`, and `@font-face` exclusions.
-  - Rewrite `:root[dir=ltr]/[dir=rtl]` to `.hibi-excalidraw-root[dir=...]`.
-  - Prefix `@keyframes` names and animation references to avoid Hibi collisions.
-  - Portal targets must be inside the scoped root; the ReactDOM shim may redirect `document.body` portals to a host element inside the root.
-- Set `langCode="en"` and bundle required locale chunks, or hide the language menu.
-- Package manifest `styles` lists the compiled CSS files so relative font URLs resolve against the package path.
-
-### Manifest
-
-Create `addons/excalidraw/hibi-addon.json`:
-
-```json
-{
-  "id": "excalidraw",
-  "name": "Excalidraw",
-  "description": "Edit Excalidraw drawings as Hibi documents.",
-  "version": "0.1.0",
-  "apiVersion": 2,
-  "kind": "extension",
-  "capabilities": ["ui"],
-  "fileExtensions": ["excalidraw"],
-  "entry": "index.js",
-  "styles": ["excalidraw.css", "host.css"],
-  "commands": [
-    { "id": "open-editor", "label": "Open Excalidraw editor" },
-    { "id": "new-drawing", "label": "New Excalidraw drawing" }
-  ],
-  "authors": [{ "displayName": "Liz Ainslie" }],
-  "licenses": []
-}
-```
-
-- Verify `excalidraw` is not a reserved built-in ID; otherwise use `excalidraw-drawing`.
-- Add Excalidraw MIT and font notices to `licenses` and `THIRD-PARTY.txt`.
-- Add `README.md` and `LICENSE.txt` in the package.
-- No `activation`, because the format must be registered when the addon is enabled.
-- No `network` declarations.
-
-### Size limits
-
-Hibi limits: 1,000 entries, 25 MiB total, 5 MiB per file, 64 KiB manifest.
-
-- Expected: ~12 MB fonts, ~3–4 MB JS, <1 MB CSS.
-- Build script must fail if limits are exceeded.
-- If `view.js` exceeds 5 MiB, split more chunks; do not silently truncate fonts without updating licenses/docs.
 
 ## Implementation tasks
 
-1. **Spike the editor rendering**
-   - Add build scripts and minimal manifest/package.
-   - Bundle Excalidraw with the React/ReactDOM/JSX shims.
-   - Register a `.excalidraw` format and an addon tab that renders a blank `<Excalidraw>`.
-   - Verify in Hibi: no CSP errors, no network requests, local fonts, drawing works, React 19 hooks work, package size limits pass.
-   - If the host-React shim or CSP makes this impossible, stop and report before building the rest.
+1. **Adapter refactor**
+   - Extract native load/serialize behind the adapter interface.
+   - Keep all existing tests and the Hibi smoke behavior passing.
+   - Add `obsidian-markdown` detection and adapter wiring.
 
-2. **Harden the bundle**
-   - Scope CSS; verify dialogs, color pickers, menus, and portals are styled and do not leak into Hibi.
-   - Confirm `EXCALIDRAW_ASSET_PATH` loads all fonts from the package.
-   - Decide export visibility based on what works offline.
+2. **Pure Obsidian parser/writer**
+   - Implement header/frontmatter preservation, old/new headings, `%%` comments, CRLF/BOM.
+   - Implement `json` and `compressed-json` (LZString).
+   - Implement text-element parse/write, element links, embedded files.
+   - Implement 8-character ID normalization and reference updates.
+   - Add fixture tests using the provided `OS Architecture Overview.excalidraw.md` and a synthetic compressed file.
 
-3. **Document I/O**
-   - Implement `scene.js`: robust parse/validate, blank document, minimal diff, invalid/unsupported errors.
-   - Load with `restore`; serialize with `serializeAsJSON`.
-   - Implement debounced `applyEdits`, target lookup, echo suppression, external-change handling, flush on unmount/save/stop.
-   - Verify panning/zooming does not dirty the document; strip transient appState fields if it does.
+3. **Detection, auto-open, new drawing**
+   - Auto-open the Excalidraw tab for `.excalidraw.md` and frontmatter-detected Markdown.
+   - New drawings create `.excalidraw.md`; add the standalone `.excalidraw` command.
+   - Update README and manifest version to `0.2.0`.
 
-4. **Format, view, commands**
-   - Register format with source + side-by-side view and read-only preview.
-   - Register follow tab and auto-open on `opened` events.
-   - Add Preview "Edit drawing" button and commands.
-   - Add new-drawing command.
+4. **Sync and save integration**
+   - Compose the whole Markdown and apply a minimal edit.
+   - Preserve header/trailing content and compression mode.
+   - Handle external Markdown edits, dirty conflicts, and the 2 MiB limit.
+   - Keep auto-save, Hibi Save interception, undo/redo bridge.
 
-5. **Undo/redo**
-   - Patch `Document.prototype.execCommand`; test undo/redo, text editing, and source-pane undo.
-   - Flush before save/close via `runAction` patch.
+5. **Attachments**
+   - Load `# Embedded Files` via `workspace.readBinary`.
+   - Externalize new data URLs to `<drawing folder>/assets/` via `workspace.createBinary`.
+   - Clear `scene.files`, write `[[assets/...]]` entries, and handle collisions/unresolved paths.
 
-6. **Preview/export**
-   - Lazy static SVG preview with fallback card.
-   - Optional `render` for documentation export; fallback if unsupported.
+6. **Links**
+   - Add `onLinkOpen`.
+   - Resolve wiki links through Hibi; open external links through the host.
+   - Verify Hibi's graph indexes the text elements and backlinks.
 
-7. **Tests and docs**
-   - Unit tests for parse/validate, blank document, minimal diff, surrogate safety, size boundary, extension detection.
-   - `npm run check`, `npm test`, build size/file-count check, `node --check` all output JS.
-   - README: install/enable, auto-open behavior, source/split preview, Hibi storage, 2 MiB document limit, offline/no collaboration, why editing is a companion tab, licenses.
-   - Manual Hibi validation.
+7. **Repair command**
+   - Scan, parse, regenerate generated sections, preserve headers.
+   - Report results; never rewrite unsupported/encrypted files.
+
+8. **Validation**
+   - Unit tests and Hibi smoke tests.
+   - Obsidian round-trip on a copy of the real vault file if Obsidian is available; otherwise verify the composed structure against the reference format.
 
 ## Failure handling
 
-- Invalid JSON or unsupported shape: show an error panel in the tab; do not write; keep source accessible.
-- `applyEdits` returns `stale`/`conflict`: stop overwriting, show "changed elsewhere", reload from source after user confirmation.
-- `applyEdits` returns `invalid` for size: persistent banner, keep the canvas alive, offer retry/export/copy; never silently discard.
-- `busy`/`composing`: retry with backoff; do not drop the pending scene.
-- Target closed: flush fails; notify and keep the tab usable/readable.
-- Preview export failure: fallback card, no source writes.
-- Undo patch must not intercept text inputs or source editors.
-- Document switch while pending: flush old document before loading the new one.
+- Invalid/unknown/encrypted file: show the source, do not write.
+- Missing or unparseable drawing block: error banner, no write.
+- LZString decode failure: error banner, no write.
+- Ambiguous document path: fall back to workspace-root `assets/`; notify.
+- Attachment create failure: keep the canvas dirty, show an error, do not silently drop the image.
+- Unresolvable element-ID references: refuse to save.
+- Hibi importer converted wiki links: repair command; never auto-rewrite the header.
+- Apply conflict/stale/busy: no overwrite; retry or reload.
+- Over 2 MiB: banner; keep the canvas alive; no silent loss.
+- Addon disabled: `.excalidraw.md` remains readable as Markdown; `.excalidraw` as source.
 
 ## Validation
 
 Automated:
 
-- `npm run build:excalidraw`
+- `pnpm run build:excalidraw`
 - `npm run check`
 - `npm test`
-- package limit check and all-output `node --check`
+- `node --check` all output JS
+- Package limits: 1,000 entries, 25 MiB total, 5 MiB/file, 64 KiB manifest
 
-Manual in Hibi:
+Hibi smoke test:
 
-1. Install unsigned package, enable, open a `.excalidraw` file: editor tab opens automatically.
-2. Draw rectangles, arrows, text, freedraw, and a small image; undo/redo; save; close/reopen.
-3. Switch to source and back; edit valid JSON whitespace; editor reflects it.
-4. Open invalid JSON: error shown, source unchanged.
-5. Switch tabs, hide/show, theme light/dark, split view; no network/CSP errors.
-6. Confirm fonts render offline and CSS does not alter Hibi chrome.
-7. Create a new drawing from the command; file appears in the workspace.
-8. Push source over 2 MiB: banner appears and no silent loss.
-9. Disable addon: `.excalidraw` files remain readable as source.
-10. Install from a ZIP/folder and verify package limits.
+1. Copy the real `OS Architecture Overview.excalidraw.md` into a temp workspace.
+2. Open it; the Excalidraw tab auto-opens and shows the drawing and text.
+3. Edit a shape and a text element; save; reopen; verify text and links.
+4. Verify the header/frontmatter and non-generated text are byte-identical.
+5. Edit the Markdown text section, reopen in Hibi, verify the canvas updates.
+6. Undo/redo, save, close/reopen.
+7. Add an image; verify `assets/<name>` exists, `# Embedded Files` maps it, and JSON `files` is empty.
+8. Open a compressed fixture; edit and save; verify compression mode is preserved.
+9. Run the repair command on an imported copy; verify `[[...]]` links are restored.
+10. Confirm no network requests and no CSP errors.
+11. Create a new `.excalidraw.md` and a standalone `.excalidraw` from commands.
+
+Obsidian round-trip, if available:
+
+- Open the edited file in Obsidian; verify the drawing, text, links, and images.
+- Make a text edit in Obsidian; reopen in Hibi; verify it appears.
 
 ## Out of scope
 
-- An editable normal-pane preview. Blocked by Hibi's preview contract; user will discuss with May. This also blocks equivalent DOCX/ODT editor-pane addons.
-- Externalized images or documents over Hibi's 2 MiB source limit.
-- Collaboration, Excalidraw+ cloud, network libraries, AI features.
-- Native addon windows (installed packages cannot register them).
-- Full-fidelity site export with custom fonts; follow-up if the SVG path works.
-- Multiple simultaneous Excalidraw editor instances.
+- Editable normal-pane previews; blocked by Hibi's preview contract. This also affects DOCX/ODT and similar formats.
+- Full Markdown rendering inside Excalidraw text (bold/formatting/embeds) beyond simple wiki-link extraction.
+- Mermaid, LaTeX, PDF embeds, Markdown-image custom elements, and Excalidraw+ cloud features.
+- Syncing Obsidian plugin settings or `.obsidian` configuration.
+- Native addon windows and native importers.
+- Perfect round-trip of every legacy Excalidraw-Obsidian feature; unsupported sections are preserved untouched.
+- Multi-dot document format registration and content-based format selection in Hibi core.
 
-## Implementation verification
+## Upstream follow-ups
 
-Verified on 2026-10-26 against the local Hibi checkout with an installed unsigned package:
+- Hibi: expose the open document's workspace path to addons.
+- Hibi: skip wiki-link conversion inside `.excalidraw.md` generated sections in `import-obsidian`.
+- Hibi: support content-based/dotted-extension document formats and an editable visual document pane.
 
-- Format recognition and auto-open of the Excalidraw tab.
-- Rectangle + text drawing, auto-save, Hibi Save, undo, redo.
-- Source contains standard Excalidraw JSON with elements, text, appState, and files.
-- Side-by-side preview renders the read-only card; "Edit drawing" reopens the tab.
-- Excalifont loads locally; zero external requests and zero console/CSP errors.
-- Package: 421 entries, 20.5 MiB total, largest file 1.78 MiB.
-- `npm test`, `npm run check`, and `node --check` on all bundled JS pass.
+## Phase 2 implementation status
 
-Implementation notes:
-- The Excalidraw font fallback URL is filtered through a temporary `FontFace` proxy so the browser never requests the esm.sh fallback under Hibi's CSP.
-- Hibi only loads addon styles from install records with `resources: true`; the smoke fixture set this like a real install.
-- The editor saves through `documents.save()` because Hibi's active-document Save does not reliably target the followed document while the addon tab is active.
+Implemented:
+
+- Obsidian `.excalidraw.md` parser/writer with header/frontmatter preservation, old and new heading levels, `json` and LZString `compressed-json`, text elements, element links, embedded files, and 8-character block-ref normalization.
+- Filename/frontmatter detection, auto-opening the Excalidraw tab, new `.excalidraw.md` drawings, standalone `.excalidraw` command, and `[[note]]`/external link opening.
+- Neighboring `assets/` attachment reads/writes via `workspace.readBinary` / `createBinary`.
+- `Repair Obsidian Excalidraw files` command for importer-converted generated sections.
+- Native `.excalidraw` regression remains green.
+
+Verified with real Hibi Electron:
+
+- Opened the real `OS Architecture Overview.excalidraw.md`.
+- Edited a rectangle and text, saved, and confirmed the header, wiki links, text block refs, and JSON scene were preserved.
+- No console errors, CSP errors, or external requests.
+- 20 unit tests pass; package and syntax checks pass.
+
+Known limitations:
+
+- Excalidraw undo/redo can reset after a `.excalidraw.md` save because Hibi rewrites the Markdown document; use undo before the save boundary. Native `.excalidraw` undo/redo remains verified.
+- Attachment folder resolution uses `workspace.index()` basename matching and falls back to workspace-root `assets/` when ambiguous.
+- The repair command skips files that are currently open.
+- Compressed-mode writing is unit-tested but not exercised in the Hibi smoke test.
+- Full Markdown rendering inside canvas text, Obsidian plugin settings, Mermaid/LaTeX/PDF custom elements, and perfect round-trip of every legacy feature remain out of scope.
+
+### Hibi 0.2.1 verification
+
+Built the Hibi `v0.2.1` tag from source and reran both Hibi Electron smokes against it:
+
+- Native `.excalidraw`: open, draw, save, undo, redo, text, font, preview, reopen — all pass.
+- Obsidian `.excalidraw.md`: open real vault file, edit rectangle and text, save — header, wiki links, block refs, and scene JSON preserved; no console/CSP errors or external requests.
+- Confirmed `ADDON_API_VERSION = 2` in v0.2.1 and verified every API used (`views`, `documents`, `workspace.readBinary/createBinary/updateText/index`, `editor.updateMarkdown`, `patches`, `openDocumentLink`).

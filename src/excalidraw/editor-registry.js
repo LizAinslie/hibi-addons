@@ -52,6 +52,12 @@ function focusedSession() {
   return null
 }
 
+function historyTarget() {
+  const focused = focusedSession()
+  if (focused) return focused
+  return sessions.size === 1 ? [...sessions][0] : null
+}
+
 function isMac() {
   return /mac|iphone|ipad|ipod/i.test(
     navigator.userAgentData?.platform || navigator.platform || navigator.userAgent,
@@ -83,15 +89,43 @@ function dispatchHistory(session, direction) {
 
 /** Hibi intercepts undo/redo before the renderer, so forward it to a focused canvas. */
 export function installHistoryBridge(context) {
-  return context.patches.instead(
+  const undo = context.patches.instead(
     Document.prototype,
     'execCommand',
     (args, next) => {
       const command = args[0]
       if (command !== 'undo' && command !== 'redo') return next(...args)
-      const session = focusedSession()
+      const session = historyTarget()
       if (!session) return next(...args)
       return dispatchHistory(session, command) || next(...args)
     },
   )
+
+  // Markdown documents route history through beforeinput on the focused rich editor.
+  const onBeforeInput = (event) => {
+    if (
+      event.inputType !== 'historyUndo' &&
+      event.inputType !== 'historyRedo'
+    ) {
+      return
+    }
+    const session = focusedSession()
+    if (!session) return
+    event.preventDefault()
+    event.stopPropagation()
+    dispatchHistory(
+      session,
+      event.inputType === 'historyRedo' ? 'redo' : 'undo',
+    )
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('beforeinput', onBeforeInput, true)
+  }
+
+  return () => {
+    undo()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('beforeinput', onBeforeInput, true)
+    }
+  }
 }

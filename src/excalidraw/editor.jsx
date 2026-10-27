@@ -2,10 +2,20 @@ import {
   CaptureUpdateAction,
   Excalidraw,
   restore,
-  serializeAsJSON,
 } from '@excalidraw/excalidraw'
+import {
+  documentKind,
+  loadDocument,
+  serializeDocument,
+} from './adapters.js'
 import { registerEditorSession } from './editor-registry.js'
-import { MAX_SOURCE_BYTES, minimalChange, parseScene } from './scene.js'
+import { parseObsidianDrawing, normalizeObsidianIds } from './obsidian.js'
+import { loadObsidianFiles, writeObsidianFiles } from './obsidian-files.js'
+import {
+  MAX_SOURCE_BYTES,
+  minimalChange,
+  scenesEquivalent,
+} from './scene.js'
 import { setPortalHost } from './shims/react-dom.js'
 
 const React = globalThis.__hibiExcalidrawReact
@@ -62,15 +72,17 @@ function restoreScene(data, theme) {
   }
 }
 
-function Canvas({ context, document }) {
+function Canvas({ context, document, kind }) {
   const rootRef = React.useRef(null)
   const portalHostRef = React.useRef(null)
   const apiRef = React.useRef(null)
   const latestRef = React.useRef(null)
+  const structureRef = React.useRef(null)
   const sourceRef = React.useRef(document.markdown)
   const initialSourceRef = React.useRef(document.markdown)
   const interactedRef = React.useRef(false)
   const dirtyRef = React.useRef(false)
+  const pointerActiveRef = React.useRef(false)
   const disposedRef = React.useRef(false)
   const suppressUntilRef = React.useRef(0)
   const busyRetriesRef = React.useRef(0)
@@ -90,10 +102,11 @@ function Canvas({ context, document }) {
   themeRef.current = theme
 
   const initial = React.useMemo(() => {
-    const parsed = parseScene(initialSourceRef.current)
-    if (!parsed.ok) return { error: parsed }
+    const loaded = loadDocument(kind, initialSourceRef.current)
+    if (!loaded.ok) return { error: loaded.error }
+    structureRef.current = loaded.parsed
     try {
-      return { data: restoreScene(parsed.data, themeRef.current) }
+      return { data: restoreScene(loaded.data, themeRef.current) }
     } catch (error) {
       return {
         error: {
@@ -104,7 +117,7 @@ function Canvas({ context, document }) {
         },
       }
     }
-  }, [attempt])
+  }, [attempt, kind])
 
   React.useEffect(() => {
     const update = () => setTheme(activeTheme(context))
@@ -124,12 +137,28 @@ function Canvas({ context, document }) {
     const mark = () => {
       interactedRef.current = true
     }
-    root.addEventListener('pointerdown', mark, true)
+    const pointerDown = () => {
+      pointerActiveRef.current = true
+      mark()
+    }
+    const pointerUp = () => {
+      pointerActiveRef.current = false
+      if (dirtyRef.current) schedule()
+    }
+    root.addEventListener('pointerdown', pointerDown, true)
+    root.addEventListener('pointerup', pointerUp, true)
+    root.addEventListener('pointercancel', pointerUp, true)
+    window.addEventListener('pointerup', pointerUp, true)
+    window.addEventListener('pointercancel', pointerUp, true)
     root.addEventListener('keydown', mark, true)
     root.addEventListener('drop', mark, true)
     root.addEventListener('paste', mark, true)
     return () => {
-      root.removeEventListener('pointerdown', mark, true)
+      root.removeEventListener('pointerdown', pointerDown, true)
+      root.removeEventListener('pointerup', pointerUp, true)
+      root.removeEventListener('pointercancel', pointerUp, true)
+      window.removeEventListener('pointerup', pointerUp, true)
+      window.removeEventListener('pointercancel', pointerUp, true)
       root.removeEventListener('keydown', mark, true)
       root.removeEventListener('drop', mark, true)
       root.removeEventListener('paste', mark, true)
@@ -137,12 +166,13 @@ function Canvas({ context, document }) {
   }, [])
 
   const schedule = React.useCallback(() => {
+    if (pointerActiveRef.current) return
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
       timerRef.current = null
       flushRef.current(false)
-    }, 400)
-  }, [])
+    }, kind === 'obsidian' ? 1000 : 400)
+  }, [kind])
 
   const saveNow = React.useCallback(
     async (explicit = false) => {
@@ -211,15 +241,13 @@ function Canvas({ context, document }) {
       if (!interactedRef.current || !dirtyRef.current) return
       const latest = latestRef.current
       if (!latest) return
+      const previousStructure = structureRef.current
 
-      let next
+      let serialized
       try {
-        next = `${serializeAsJSON(
-          latest.elements,
-          latest.appState,
-          latest.files,
-          'local',
-        )}\n`
+        serialized = serializeDocument(kind, latest, {
+          parsed: structureRef.current,
+        })
       } catch (error) {
         setIssue({
           kind: 'error',
@@ -230,6 +258,7 @@ function Canvas({ context, document }) {
         })
         return
       }
+      const next = serialized.source
 
       if (next === sourceRef.current) {
         dirtyRef.current = false
@@ -274,8 +303,27 @@ function Canvas({ context, document }) {
         return
       }
 
-      const change = minimalChange(read.source, next)
-      if (!change) {
+      const comparable =
+        kind === 'obsidian' ? normalizeObsidianIds(latest) : latest
+      if (
+        structureRef.current?.data &&
+        scenesEquivalent(structureRef.current.data, comparable)
+      ) {
+        sourceRef.current = read.source
+        dirtyRef.current = false
+        setIssue(null)
+        return
+      }
+
+      const fallback = minimalChange(read.source, next)
+      const changes =
+        serialized.edits?.length &&
+        structureRef.current?.source === read.source
+          ? serialized.edits
+          : fallback
+            ? [fallback]
+            : []
+      if (!changes.length) {
         sourceRef.current = next
         dirtyRef.current = false
         setIssue(null)
@@ -287,7 +335,7 @@ function Canvas({ context, document }) {
         result = context.documents.applyEdits({
           requestId: crypto.randomUUID(),
           target: read.target,
-          changes: [change],
+          changes,
         })
       } catch (error) {
         setIssue({
@@ -300,11 +348,59 @@ function Canvas({ context, document }) {
         return
       }
 
+      if (
+        result.status === 'unsupported-view' &&
+        kind === 'obsidian' &&
+        context.editor.getDocument()?.tabId === document.tabId
+      ) {
+        try {
+          context.editor.updateMarkdown(() => next)
+          result = { status: 'applied' }
+        } catch (error) {
+          setIssue({
+            kind: 'error',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'The edit was rejected.',
+          })
+          return
+        }
+      }
+
       if (result.status === 'applied') {
-        sourceRef.current = next
+        let appliedSource = next
+        if (kind === 'obsidian') {
+          const current = context.documents
+            .listOpen()
+            .find((entry) => entry.tabId === document.tabId)
+          const refreshed = current
+            ? context.documents.readSource(current.target)
+            : null
+          if (refreshed?.status === 'read') appliedSource = refreshed.source
+        }
+        sourceRef.current = appliedSource
         dirtyRef.current = false
         busyRetriesRef.current = 0
         setIssue(null)
+        if (kind === 'obsidian') {
+          const reparsed = parseObsidianDrawing(appliedSource)
+          if (reparsed.ok) structureRef.current = reparsed
+          if (Object.keys(latest.files ?? {}).length) {
+            void writeObsidianFiles(
+              context,
+              document,
+              latest.files,
+              previousStructure,
+            ).catch((error) => {
+              context.notify(
+                error instanceof Error
+                  ? error.message
+                  : 'A drawing attachment could not be written.',
+              )
+            })
+          }
+        }
         if (explicit) saveRef.current(true)
         else scheduleSave()
         return
@@ -384,13 +480,14 @@ function Canvas({ context, document }) {
       })
       return
     }
-    const parsed = parseScene(document.markdown)
-    if (!parsed.ok) {
-      setIssue({ kind: 'invalid-source', message: parsed.message })
+    const loaded = loadDocument(kind, document.markdown)
+    if (!loaded.ok) {
+      setIssue({ kind: 'invalid-source', message: loaded.error.message })
       return
     }
     try {
-      const next = restoreScene(parsed.data, themeRef.current)
+      const next = restoreScene(loaded.data, themeRef.current)
+      structureRef.current = loaded.parsed
       suppressUntilRef.current = performance.now() + 150
       if (Object.keys(next.files).length) {
         apiRef.current.addFiles(Object.values(next.files))
@@ -400,6 +497,11 @@ function Canvas({ context, document }) {
         { captureUpdate: CaptureUpdateAction.NEVER },
       )
       sourceRef.current = document.markdown
+      latestRef.current = {
+        elements: next.elements,
+        appState: next.appState,
+        files: next.files,
+      }
       dirtyRef.current = false
       setIssue((current) =>
         current?.kind === 'size' || current?.kind === 'conflict'
@@ -417,6 +519,32 @@ function Canvas({ context, document }) {
     }
   }, [document.markdown, document.contentVersion, apiReady])
 
+  React.useEffect(() => {
+    if (!apiReady || kind !== 'obsidian' || !structureRef.current) return
+    let active = true
+    loadObsidianFiles(context, document, structureRef.current)
+      .then((loaded) => {
+        if (!active || !apiRef.current) return
+        const values = Object.values(loaded)
+        if (!values.length) return
+        apiRef.current.addFiles(values)
+        suppressUntilRef.current = performance.now() + 150
+        apiRef.current.updateScene(
+          {
+            elements:
+              latestRef.current?.elements ?? apiRef.current.getSceneElements(),
+          },
+          { captureUpdate: CaptureUpdateAction.NEVER },
+        )
+      })
+      .catch((error) => {
+        console.warn('Could not load Obsidian attachments:', error)
+      })
+    return () => {
+      active = false
+    }
+  }, [apiReady, kind, document.tabId])
+
   const reload = () => {
     const metadata = context.documents
       .listOpen()
@@ -426,13 +554,14 @@ function Canvas({ context, document }) {
       const read = context.documents.readSource(metadata.target)
       if (read.status === 'read') source = read.source
     }
-    const parsed = parseScene(source)
-    if (!parsed.ok) {
-      setIssue({ kind: 'invalid-source', message: parsed.message })
+    const loaded = loadDocument(kind, source)
+    if (!loaded.ok) {
+      setIssue({ kind: 'invalid-source', message: loaded.error.message })
       return
     }
     try {
-      const next = restoreScene(parsed.data, themeRef.current)
+      const next = restoreScene(loaded.data, themeRef.current)
+      structureRef.current = loaded.parsed
       suppressUntilRef.current = performance.now() + 150
       if (Object.keys(next.files).length) {
         apiRef.current?.addFiles(Object.values(next.files))
@@ -442,6 +571,11 @@ function Canvas({ context, document }) {
         { captureUpdate: CaptureUpdateAction.NEVER },
       )
       sourceRef.current = source
+      latestRef.current = {
+        elements: next.elements,
+        appState: next.appState,
+        files: next.files,
+      }
       dirtyRef.current = false
       setIssue(null)
     } catch (error) {
@@ -468,6 +602,31 @@ function Canvas({ context, document }) {
   const openSource = () => {
     context.app.runAction('markdown')
   }
+
+  const openLink = React.useCallback(
+    async (element) => {
+      const link = element?.link
+      if (!link) return
+      const inner = link.startsWith('[[') ? link.slice(2, -2).split('|')[0] : ''
+      const href = inner
+        ? `obsidian-wiki:${encodeURIComponent(inner)}`
+        : link
+      try {
+        const current = await window.hibi?.getDocument?.()
+        const revision = current?.revision ?? document.revision
+        if (window.hibi?.openDocumentLink) {
+          await window.hibi.openDocumentLink(href, revision)
+          return
+        }
+        context.notify('This link cannot be opened here.')
+      } catch (error) {
+        context.notify(
+          error instanceof Error ? error.message : 'The link could not be opened.',
+        )
+      }
+    },
+    [context, document.revision],
+  )
 
   const banner = issue
     ? React.createElement(
@@ -542,6 +701,10 @@ function Canvas({ context, document }) {
             setApiReady(true)
           },
           onChange: handleChange,
+          onLinkOpen: (element, event) => {
+            event.preventDefault()
+            void openLink(element)
+          },
           theme,
           name: document.name,
           langCode: 'en',
@@ -567,12 +730,13 @@ export function Editor(props) {
       React.createElement(
         'p',
         null,
-        'Select or create an .excalidraw file to use the Excalidraw editor.',
+        'Select or create an .excalidraw or .excalidraw.md drawing.',
       ),
     )
   }
 
-  if (!document.name.toLowerCase().endsWith('.excalidraw')) {
+  const kind = documentKind(document.name, document.markdown)
+  if (kind === 'unknown') {
     return React.createElement(
       'div',
       { className: 'hibi-excalidraw-loading' },
@@ -580,14 +744,15 @@ export function Editor(props) {
       React.createElement(
         'p',
         null,
-        'This tab edits .excalidraw documents. Select a drawing to continue.',
+        'This tab edits .excalidraw and Obsidian .excalidraw.md drawings.',
       ),
     )
   }
 
   return React.createElement(Canvas, {
-    key: document.tabId,
+    key: `${document.tabId}:${kind}`,
     context,
     document,
+    kind,
   })
 }

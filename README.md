@@ -1,16 +1,14 @@
 # Hibi addons
 
-This repository contains Hibi extensions. `addons/excalidraw` makes `.excalidraw` files editable Hibi documents. `addons/hello` is a minimal example that adds a **Say hello** command and remembers how many times you ran it.
+This repository contains the Excalidraw addon for Hibi 0.2.1. It makes `.excalidraw` files and Obsidian `.excalidraw.md` drawings editable Hibi documents.
 
 To make a theme, start from the [theme starter](https://github.com/hibigarden/theme-starter) instead.
 
 Hibi installs the files exactly as they are in this repository. It does not run build scripts or install dependencies, so every file a package needs must be committed. The Excalidraw package is built from `src/excalidraw/` into `addons/excalidraw/`.
 
-## Start a new addon
+## Development
 
-Choose **Use this template** on GitHub to create your own repository, then clone it. You need Node.js 22.18 or later to run the checks.
-
-Run these commands from the repository folder:
+You need Node.js 22.18 or later to run the checks. Run these commands from the repository folder:
 
 ```sh
 pnpm install
@@ -29,9 +27,7 @@ Packages from this repository are unsigned. Before you install one, turn on **Al
 2. Select this repository's folder, or the `addons/excalidraw` folder.
 3. Review the extension and install it. Hibi installs addons turned off.
 4. Enable **Excalidraw** in **Settings → Addons**.
-5. Open an `.excalidraw` file. Hibi opens the Excalidraw editor tab automatically.
-
-`addons/hello` installs the same way; run **Say hello** from the command palette.
+5. Open an `.excalidraw` or `.excalidraw.md` file. Hibi opens the Excalidraw editor tab automatically.
 
 After you change a package, install it again. Hibi replaces the installed copy after you confirm.
 
@@ -51,9 +47,9 @@ To ship more than one extension from this repository, add each one in its own fo
 
 ### Extensions
 
-`index.js` exports a function that returns `start` and `stop`. Hibi calls `start` with a context when the addon turns on, and `stop` when it turns off. Undo everything `start` registered in `stop`, as the example does with its command.
+`index.js` exports a function that returns `start` and `stop`. Hibi calls `start` with a context when the addon turns on, and `stop` when it turns off. Undo everything `start` registered in `stop`, as the Excalidraw addon does with its document format, editor tab, commands, and patches.
 
-The manifest controls when the extension loads and which parts of Hibi it can use. The example sets `"activation": "command"`, so Hibi loads it the first time you run its command, and it lists `"capabilities": []` because it needs no editor or interface libraries. Keep command IDs in `hibi-addon.json` and `index.js` the same.
+The manifest controls when the extension loads and which parts of Hibi it can use. Excalidraw has no `activation` because it must register its document format at startup, and it lists `"capabilities": ["ui"]` because it needs React and Hibi's shared controls. New drawings are created as Obsidian-compatible `.excalidraw.md` files; a separate command creates standalone `.excalidraw` JSON. Keep command IDs in `hibi-addon.json` and `index.js` the same.
 
 The entry file must be JavaScript (`.js` or `.mjs`). If you prefer TypeScript or a bundler, compile to JavaScript and commit the output. See [adding functionality](https://docs.hibi.garden/#page=development%2Faddons%2Fadding-functionality.md), [storage](https://docs.hibi.garden/#page=development%2Faddons%2Fstorage.md), and the [addon API reference](https://docs.hibi.garden/#page=development%2Faddon-api-reference%2FAddonContext.md) for what extensions can do.
 

@@ -176,7 +176,7 @@ test('the addon registers its format, tab, commands, and patches', async () => {
   assert.equal(views[0].lifetime, 'visible')
   assert.deepEqual(
     commands.map(({ id }) => id),
-    ['open-editor', 'new-drawing'],
+    ['open-editor', 'new-drawing', 'new-json-drawing', 'repair-obsidian'],
   )
   assert.equal(
     patches.some(
@@ -245,7 +245,7 @@ test('the new drawing command avoids overwriting existing files', async () => {
       get: async () => ({ id: 'workspace', workspaceGeneration: 1 }),
       createText: async (_target, path) => {
         created.push(path)
-        return path === 'Untitled.excalidraw'
+        return path === 'Untitled.excalidraw.md'
           ? { ok: false, code: 'conflict', message: 'exists' }
           : { ok: true, value: { path } }
       },
@@ -254,8 +254,8 @@ test('the new drawing command avoids overwriting existing files', async () => {
   })
 
   await commands.get('new-drawing').run()
-  assert.deepEqual(created, ['Untitled.excalidraw', 'Untitled 2.excalidraw'])
-  assert.deepEqual(opened, ['Untitled 2.excalidraw'])
+  assert.deepEqual(created, ['Untitled.excalidraw.md', 'Untitled 2.excalidraw.md'])
+  assert.deepEqual(opened, ['Untitled 2.excalidraw.md'])
   assert.deepEqual(notices, [])
   addon.stop()
   delete globalThis.Document

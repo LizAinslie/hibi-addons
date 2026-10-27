@@ -131,3 +131,48 @@ export function summariseScene(data) {
     images: Object.keys(files).length,
   }
 }
+
+const VOLATILE_ELEMENT_KEYS = new Set(['version', 'versionNonce', 'updated'])
+const EXPORTED_APP_STATE_KEYS = [
+  'gridSize',
+  'gridStep',
+  'gridModeEnabled',
+  'viewBackgroundColor',
+]
+
+function stableElement(element) {
+  if (!element || typeof element !== 'object') return element
+  const copy = {}
+  for (const key of Object.keys(element)) {
+    if (!VOLATILE_ELEMENT_KEYS.has(key)) copy[key] = element[key]
+  }
+  return copy
+}
+
+function exportedAppState(appState) {
+  const result = {}
+  for (const key of EXPORTED_APP_STATE_KEYS) {
+    if (appState?.[key] !== undefined) result[key] = appState[key]
+  }
+  return result
+}
+
+export function scenesEquivalent(left, right) {
+  if (!left || !right) return false
+  const leftElements = left.elements ?? []
+  const rightElements = right.elements ?? []
+  if (leftElements.length !== rightElements.length) return false
+  for (let index = 0; index < leftElements.length; index++) {
+    if (
+      JSON.stringify(stableElement(leftElements[index])) !==
+      JSON.stringify(stableElement(rightElements[index]))
+    ) {
+      return false
+    }
+  }
+  return (
+    JSON.stringify(exportedAppState(left.appState)) ===
+      JSON.stringify(exportedAppState(right.appState)) &&
+    JSON.stringify(left.files ?? {}) === JSON.stringify(right.files ?? {})
+  )
+}

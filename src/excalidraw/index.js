@@ -1,9 +1,13 @@
 import {
   blankDocument,
-  isExcalidrawName,
   parseScene,
   summariseScene,
 } from './scene.js'
+import { canOpenExcalidrawDocument } from './detect.js'
+import {
+  blankObsidianDocument,
+  repairObsidianSource,
+} from './obsidian.js'
 import {
   flushEditorSessions,
   installHistoryBridge,
@@ -70,12 +74,19 @@ export default ({ React, ui }) => {
 
   const isCurrentDrawing = () => {
     const document = context?.editor.getDocument() ?? lastDocument
-    return Boolean(document && isExcalidrawName(document.name))
+    return Boolean(
+      document && canOpenExcalidrawDocument(document.name, document.markdown),
+    )
   }
 
   const maybeAutoOpen = (document) => {
     if (document) lastDocument = document
-    if (!document || !isExcalidrawName(document.name)) return
+    if (
+      !document ||
+      !canOpenExcalidrawDocument(document.name, document.markdown)
+    ) {
+      return
+    }
     if (autoOpened.has(document.tabId)) return
     autoOpened.add(document.tabId)
     try {
@@ -237,6 +248,38 @@ export default ({ React, ui }) => {
         }),
       )
 
+      const createDrawing = async (extension, source) => {
+        const workspace = await context.workspace.get()
+        if (!workspace?.id || workspace.workspaceGeneration === undefined) {
+          context.notify('Open a workspace folder to create a drawing.')
+          return
+        }
+        const target = {
+          workspaceId: workspace.id,
+          workspaceGeneration: workspace.workspaceGeneration,
+        }
+        for (let index = 1; index <= 50; index++) {
+          const name =
+            index === 1
+              ? `Untitled${extension}`
+              : `Untitled ${index}${extension}`
+          const result = await context.workspace.createText(
+            target,
+            name,
+            source,
+          )
+          if (result.ok) {
+            await context.workspace.openFile(name)
+            return
+          }
+          if (result.code !== 'conflict' && result.code !== 'not-found') {
+            context.notify(result.message)
+            return
+          }
+        }
+        context.notify('Could not find an unused drawing name.')
+      }
+
       disposers.push(
         context.commands.register({
           id: 'open-editor',
@@ -244,7 +287,7 @@ export default ({ React, ui }) => {
           keywords: 'canvas drawing diagram excalidraw',
           run: () => {
             if (!isCurrentDrawing()) {
-              context.notify('Open an .excalidraw drawing first.')
+              context.notify('Open an .excalidraw or .excalidraw.md drawing first.')
               return
             }
             openEditor()
@@ -256,35 +299,74 @@ export default ({ React, ui }) => {
         context.commands.register({
           id: 'new-drawing',
           label: 'New Excalidraw drawing',
-          keywords: 'canvas diagram excalidraw create',
+          keywords: 'canvas diagram excalidraw create markdown obsidian',
+          run: () =>
+            createDrawing(
+              '.excalidraw.md',
+              blankObsidianDocument(blankDocument()),
+            ),
+        }),
+      )
+
+      disposers.push(
+        context.commands.register({
+          id: 'new-json-drawing',
+          label: 'New standalone Excalidraw JSON file',
+          keywords: 'canvas diagram excalidraw create json',
+          run: () => createDrawing('.excalidraw', blankDocument()),
+        }),
+      )
+
+      disposers.push(
+        context.commands.register({
+          id: 'repair-obsidian',
+          label: 'Repair Obsidian Excalidraw files',
+          keywords: 'obsidian excalidraw repair links import',
           async run() {
             const workspace = await context.workspace.get()
             if (!workspace?.id || workspace.workspaceGeneration === undefined) {
-              context.notify('Open a workspace folder to create a drawing.')
+              context.notify('Open a workspace folder to repair drawings.')
               return
             }
             const target = {
               workspaceId: workspace.id,
               workspaceGeneration: workspace.workspaceGeneration,
             }
-            for (let index = 1; index <= 50; index++) {
-              const name =
-                index === 1 ? 'Untitled.excalidraw' : `Untitled ${index}.excalidraw`
-              const result = await context.workspace.createText(
+            const index = await context.workspace.index()
+            const open = context.documents.listOpen()
+            let repaired = 0
+            let skipped = 0
+            let failed = 0
+            for (const page of index?.pages ?? []) {
+              if (!page.path.toLowerCase().endsWith('.excalidraw.md')) continue
+              const name = page.path.split('/').pop()
+              if (open.some((entry) => entry.name === name)) {
+                skipped++
+                continue
+              }
+              const read = await context.workspace.readText(target, page.path)
+              if (!read.ok) {
+                failed++
+                continue
+              }
+              const result = repairObsidianSource(read.value.markdown)
+              if (!result.ok || !result.changed) {
+                skipped++
+                continue
+              }
+              const update = await context.workspace.updateText(
                 target,
-                name,
-                blankDocument(),
+                page.path,
+                read.value.version,
+                result.markdown,
+                { allowMetadataReset: true },
               )
-              if (result.ok) {
-                await context.workspace.openFile(name)
-                return
-              }
-              if (result.code !== 'conflict' && result.code !== 'not-found') {
-                context.notify(result.message)
-                return
-              }
+              if (update.ok) repaired++
+              else failed++
             }
-            context.notify('Could not find an unused drawing name.')
+            context.notify(
+              `Obsidian drawings repaired: ${repaired}. Skipped: ${skipped}. Failed: ${failed}.`,
+            )
           },
         }),
       )

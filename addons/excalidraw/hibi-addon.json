@@ -1,8 +1,8 @@
 {
   "id": "excalidraw",
   "name": "Excalidraw",
-  "description": "Edit .excalidraw drawings as Hibi documents.",
-  "version": "0.1.0",
+  "description": "Edit .excalidraw and Obsidian .excalidraw.md drawings as Hibi documents.",
+  "version": "0.2.0",
   "apiVersion": 2,
   "kind": "extension",
   "capabilities": ["ui"],
@@ -11,7 +11,9 @@
   "styles": ["excalidraw.css", "host.css"],
   "commands": [
     { "id": "open-editor", "label": "Open Excalidraw editor" },
-    { "id": "new-drawing", "label": "New Excalidraw drawing" }
+    { "id": "new-drawing", "label": "New Excalidraw drawing" },
+    { "id": "new-json-drawing", "label": "New standalone Excalidraw JSON file" },
+    { "id": "repair-obsidian", "label": "Repair Obsidian Excalidraw files" }
   ],
   "authors": [
     {
