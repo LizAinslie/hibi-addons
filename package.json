@@ -1,14 +1,21 @@
 {
-  "name": "hibi-addon-starter",
+  "name": "hibi-addons",
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "Hibi addons, including the Excalidraw document format.",
   "license": "MIT",
   "engines": {
     "node": ">=22.18.0"
   },
   "scripts": {
+    "build:excalidraw": "node scripts/build-excalidraw.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "esbuild": "^0.28.2",
+    "postcss": "^8.5.31"
   }
 }

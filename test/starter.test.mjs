@@ -29,7 +29,7 @@ test('the repository contains an installable extension', () => {
       folder,
       manifest.kind,
     ]),
-    [['addons/hello', 'extension']],
+    [['addons/excalidraw', 'extension'], ['addons/hello', 'extension']],
   )
 })
 
@@ -75,7 +75,7 @@ test('the extension registers its declared command and stops cleanly', async () 
 })
 
 test('each package also installs on its own from its folder', () => {
-  for (const folder of ['addons/hello'])
+  for (const folder of ['addons/excalidraw', 'addons/hello'])
     assert.deepEqual(
       checkRepository(join(root, folder)).map((item) => item.folder),
       [''],

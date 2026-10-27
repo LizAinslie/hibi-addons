@@ -1,39 +1,45 @@
-# Hibi addon starter
+# Hibi addons
 
-This repository is a starting point for [Hibi](https://hibi.garden) extensions. `addons/hello` is a ready-to-install extension. It adds a **Say hello** command and remembers how many times you ran it.
+This repository contains Hibi extensions. `addons/excalidraw` makes `.excalidraw` files editable Hibi documents. `addons/hello` is a minimal example that adds a **Say hello** command and remembers how many times you ran it.
 
 To make a theme, start from the [theme starter](https://github.com/hibigarden/theme-starter) instead.
 
-Hibi installs the files exactly as they are in this repository. It does not run build scripts or install dependencies, so every file a package needs must be committed.
+Hibi installs the files exactly as they are in this repository. It does not run build scripts or install dependencies, so every file a package needs must be committed. The Excalidraw package is built from `src/excalidraw/` into `addons/excalidraw/`.
 
 ## Start a new addon
 
-Choose **Use this template** on GitHub to create your own repository, then clone it. You need Node.js 22.18 or later to run the checks. The starter has no dependencies, so you do not need to run `npm install`.
+Choose **Use this template** on GitHub to create your own repository, then clone it. You need Node.js 22.18 or later to run the checks.
 
 Run these commands from the repository folder:
 
 ```sh
-npm run check
-npm test
+pnpm install
+pnpm run build:excalidraw
+pnpm run check
+pnpm test
 ```
 
-`npm run check` finds every package the way Hibi does and reports common mistakes, such as a missing readme, a missing entry file, or a file type that Hibi will not install. `npm test` runs the example tests in `test/`. Hibi's installer has the final say, so also install your package in Hibi before you share it.
+`pnpm run build:excalidraw` regenerates the Excalidraw package and enforces Hibi's package limits. `pnpm run check` finds every package the way Hibi does and reports common mistakes, such as a missing readme, a missing entry file, or a file type that Hibi will not install. `pnpm test` runs the tests in `test/`. Hibi's installer has the final say, so also install your package in Hibi before you share it.
 
 ## Try it in Hibi
 
-Packages from this starter are unsigned. Before you install one, turn on **Allow unsigned addons** under **Settings → Addon Manager → Security**.
+Packages from this repository are unsigned. Before you install one, turn on **Allow unsigned addons** under **Settings → Addon Manager → Security**.
 
 1. Run **Install addon…** from Hibi's command palette.
-2. Select this repository's folder, or the `addons/hello` folder.
+2. Select this repository's folder, or the `addons/excalidraw` folder.
 3. Review the extension and install it. Hibi installs addons turned off.
-4. Enable it in **Settings → Addons**.
-5. Run **Say hello** from the command palette. Run it again to see the saved count.
+4. Enable **Excalidraw** in **Settings → Addons**.
+5. Open an `.excalidraw` file. Hibi opens the Excalidraw editor tab automatically.
+
+`addons/hello` installs the same way; run **Say hello** from the command palette.
 
 After you change a package, install it again. Hibi replaces the installed copy after you confirm.
 
 ## Make it yours
 
-Rename the package folder, then update `hibi-addon.json` in it:
+The Excalidraw integration source lives in `src/excalidraw/`. Edit it, then run `pnpm run build:excalidraw` and commit the regenerated files under `addons/excalidraw/`. Do not edit the generated `index.js`, `editor.js`, `chunks/`, `fonts/`, `excalidraw.css`, or `host.css` by hand.
+
+For a new package, add a folder under `addons/` and update its `hibi-addon.json`:
 
 - `id` must be unique. Use up to 48 lowercase letters, numbers, and hyphens, starting with a letter. Hibi refuses IDs that belong to its built-in addons.
 - Change `name`, `description`, and `authors` to describe your addon.
@@ -67,4 +73,4 @@ After a maintainer reviews and merges your listing, Hibi garden signs the listed
 
 ## License
 
-The starter is available under the [MIT License](LICENSE). Each package carries its own copy in `LICENSE.txt`, because Hibi installs only the package folder. You can change the license of your own addon; update both files if you do.
+The addon is available under the [MIT License](LICENSE). Each package carries its own copy in `LICENSE.txt`, because Hibi installs only the package folder. Excalidraw and its bundled fonts have their own notices in `addons/excalidraw/THIRD-PARTY.txt`.
