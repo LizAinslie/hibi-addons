@@ -27,7 +27,7 @@ Packages from this repository are unsigned. Before you install one, turn on **Al
 2. Select this repository's folder, or the `addons/excalidraw` folder.
 3. Review the extension and install it. Hibi installs addons turned off.
 4. Enable **Excalidraw** in **Settings → Addons**.
-5. Open an `.excalidraw` or `.excalidraw.md` file. Hibi opens the Excalidraw editor tab automatically.
+5. Open an `.excalidraw` or `.excalidraw.md` file. Hibi opens a named Excalidraw editor tab for that drawing automatically.
 
 After you change a package, install it again. Hibi replaces the installed copy after you confirm.
 

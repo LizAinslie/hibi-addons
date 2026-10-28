@@ -261,3 +261,27 @@ test('repairs converted Obsidian wiki links from the scene JSON', () => {
   assert.equal(repaired.changed, true)
   assert.match(repaired.markdown, /\[\[Other Note\]\] \^bbbb2222/)
 })
+
+test('preserves wrapped scene text when Obsidian text is unchanged', () => {
+  const wrapped = {
+    ...scene,
+    elements: [
+      {
+        ...scene.elements[0],
+        text: 'Onboard H/\n-PCIe Devices',
+        originalText: 'Onboard H/\n-PCIe Devices',
+        rawText: 'Onboard H/\n-PCIe Devices',
+        height: 100,
+      },
+      scene.elements[1],
+    ],
+  }
+  const source = fixture(JSON.stringify(wrapped, null, '\t')).replace(
+    'Hello ^aaaa1111',
+    'Onboard H/ -PCIe Devices ^aaaa1111',
+  )
+  const parsed = parseObsidianDrawing(source)
+  const applied = applyObsidianMarkdown(parsed.data, parsed)
+  assert.equal(applied.elements[0].text, 'Onboard H/\n-PCIe Devices')
+  assert.equal(applied.elements[0].height, 100)
+})

@@ -357,13 +357,26 @@ function textBlock(raw) {
   }
 }
 
+const normalizedText = (value) =>
+  String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
 export function applyObsidianMarkdown(scene, parsed) {
   const elements = scene.elements.map((element) => {
     if (!element || element.isDeleted) return element
     const raw = parsed.textElements.get(element.id)
     if (raw !== undefined) {
       if (element.type === 'text') {
-        return { ...element, ...textBlock(raw) }
+        const next = textBlock(raw)
+        if (normalizedText(element.text) === normalizedText(next.text)) {
+          return {
+            ...element,
+            rawText: next.rawText,
+            ...(next.link ? { link: next.link } : {}),
+          }
+        }
+        return { ...element, ...next }
       }
       const wiki = raw.match(/\[\[[^\]]+\]\]/)
       if (wiki) return { ...element, link: wiki[0] }

@@ -13,11 +13,11 @@ Install the folder or ZIP, then enable **Excalidraw** in **Settings → Addons**
 
 ## Use
 
-- Open an `.excalidraw` or `.excalidraw.md` file. Hibi opens a full-size **Excalidraw** tab automatically.
+- Open an `.excalidraw` or `.excalidraw.md` file. Hibi opens a named **Excalidraw · filename** tab for that drawing automatically. Each open drawing gets its own editor tab.
 - Draw in the Excalidraw tab. Changes are written back to the document and saved through Hibi's document API. **Save** also saves the active drawing.
-- For `.excalidraw.md`, Hibi keeps the YAML header, Obsidian text elements, element links, and embedded-file sections in sync with the drawing. Both uncompressed and LZString `compressed-json` blocks are supported.
+- For `.excalidraw.md`, Hibi keeps the YAML header, Obsidian text elements, element links, and embedded-file sections in sync with the drawing. Both uncompressed and LZString `compressed-json` blocks are supported. Text in older scenes is re-wrapped and re-measured after the bundled handwriting fonts load so it fits its containers.
 - `[[note]]` links on canvas elements open through Hibi's wiki-link handling. The text elements section also keeps those links indexable by Hibi's graph.
-- Close the editor tab and switch the document to **Source** to inspect or edit the Markdown/JSON. The Markdown tab still renders the Obsidian sections; the Excalidraw tab is the drawing editor.
+- Close the editor tab or switch the document to **Source** to inspect or edit the Markdown/JSON. Selecting the document/source tab hides its named Excalidraw editor tab; click the named Excalidraw tab to return to the canvas. The Markdown tab still renders the Obsidian sections.
 - Run **New Excalidraw drawing** to create `Untitled.excalidraw.md`.
 - Run **New standalone Excalidraw JSON file** to create `Untitled.excalidraw`.
 - Run **Open Excalidraw editor** to reopen the editor after closing its tab.

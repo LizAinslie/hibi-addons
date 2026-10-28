@@ -370,3 +370,18 @@ Built the Hibi `v0.2.1` tag from source and reran both Hibi Electron smokes agai
 - Native `.excalidraw`: open, draw, save, undo, redo, text, font, preview, reopen — all pass.
 - Obsidian `.excalidraw.md`: open real vault file, edit rectangle and text, save — header, wiki links, block refs, and scene JSON preserved; no console/CSP errors or external requests.
 - Confirmed `ADDON_API_VERSION = 2` in v0.2.1 and verified every API used (`views`, `documents`, `workspace.readBinary/createBinary/updateText/index`, `editor.updateMarkdown`, `patches`, `openDocumentLink`).
+
+### Follow-up fixes after real-vault testing
+
+- Text elements from older Obsidian scenes are no longer overwritten with unwrapped Markdown text. The editor preserves existing wrapped text when the content matches.
+- Bound text is laid out against its container width with the current font metrics, then re-laid out after the bundled Virgil/Excalifont faces load. This fixes the clipped `.excalidraw` text blocks seen in Hibi.
+- Each drawing now opens its own pinned, named `Excalidraw · <filename>` tab instead of one follow tab. Selecting a source tab hides that drawing's editor tab; selecting the named tab returns to the same drawing. This fixes multi-drawing tab mix-ups.
+- The pinned editor reads the latest document source by `tabId` so it stays current after source edits and hidden-tab remounts.
+
+Verified against the Hibi `v0.2.1` build with two `.excalidraw.md` files open:
+
+- Separate named editor tabs.
+- Source switching hides the editor tab without losing the document.
+- Returning to each named tab shows the correct drawing.
+- Text blocks reflow and fit their containers; no clipping in the tested vault file.
+- Native `.excalidraw`, Obsidian open/edit/save, undo/redo (native), fonts, and preview all remain green.

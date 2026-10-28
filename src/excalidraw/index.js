@@ -15,7 +15,7 @@ import {
   shouldHandleSave,
 } from './editor-registry.js'
 
-const EDITOR_VIEW_ID = 'canvas'
+const EDITOR_VIEW_PREFIX = 'canvas-'
 let nativeFontFace = null
 let previousAssetPath
 
@@ -62,14 +62,57 @@ function escapeHtml(value) {
 export default ({ React, ui }) => {
   const h = React.createElement
   let context = null
-  let view = null
   let lastDocument = null
   const disposers = []
   const autoOpened = new Set()
+  const documentViews = new Map()
+  const viewRegistrations = new Set()
 
-  const openEditor = () => {
-    if (!view) return
-    view.open({ id: EDITOR_VIEW_ID, binding: 'follow', focus: true })
+  const viewId = (tabId) =>
+    `${EDITOR_VIEW_PREFIX}${String(tabId).replace(/[^a-zA-Z0-9-]/g, '').slice(0, 48)}`
+  const viewLabel = (name) => `Excalidraw · ${name}`.slice(0, 100)
+
+  const ensureDocumentView = (document) => {
+    const existing = documentViews.get(document.tabId)
+    if (existing) return existing
+    const instanceId = viewId(document.tabId)
+    const registration = context.views.register({
+      id: instanceId,
+      label: viewLabel(document.name),
+      location: 'tab',
+      lifetime: 'visible',
+      Content: EditorView,
+    })
+    const metadata = context.documents
+      .listOpen()
+      .find((entry) => entry.tabId === document.tabId)
+    const entry = {
+      instanceId,
+      registration,
+      tabId: document.tabId,
+      documentId: metadata?.target?.documentId ?? null,
+    }
+    documentViews.set(document.tabId, entry)
+    viewRegistrations.add(entry)
+    return entry
+  }
+
+  const openDocumentView = (document) => {
+    if (!document) return
+    const entry = ensureDocumentView(document)
+    entry.registration.open({
+      id: entry.instanceId,
+      binding: 'pinned',
+      focus: true,
+    })
+  }
+
+  const openEditor = (document = context?.editor.getDocument() ?? lastDocument) => {
+    if (!document || !canOpenExcalidrawDocument(document.name, document.markdown)) {
+      return false
+    }
+    openDocumentView(document)
+    return true
   }
 
   const isCurrentDrawing = () => {
@@ -90,14 +133,27 @@ export default ({ React, ui }) => {
     if (autoOpened.has(document.tabId)) return
     autoOpened.add(document.tabId)
     try {
-      openEditor()
+      openDocumentView(document)
     } catch (error) {
       autoOpened.delete(document.tabId)
       console.error('Could not open the Excalidraw editor:', error)
     }
   }
 
-  function Preview({ value }) {
+  const forgetDocumentView = (documentId) => {
+    for (const [tabId, entry] of documentViews) {
+      if (entry.documentId !== documentId) continue
+      documentViews.delete(tabId)
+      viewRegistrations.delete(entry)
+      try {
+        entry.registration.dispose()
+      } catch (error) {
+        console.warn('Could not close the Excalidraw view:', error)
+      }
+    }
+  }
+
+  function Preview({ value, document }) {
     const parsed = React.useMemo(() => parseScene(value), [value])
     const summary = parsed.ok ? summariseScene(parsed.data) : null
     return h(
@@ -156,7 +212,7 @@ export default ({ React, ui }) => {
         ),
         h(
           ui.Button,
-          { type: 'button', onClick: openEditor },
+          { type: 'button', onClick: () => openEditor(document) },
           'Edit drawing',
         ),
       ),
@@ -228,13 +284,16 @@ export default ({ React, ui }) => {
       globalThis.EXCALIDRAW_ASSET_PATH = new URL('./', import.meta.url).href
       installFontFaceFilter()
 
-      view = context.views.register({
-        id: EDITOR_VIEW_ID,
-        label: 'Excalidraw',
-        location: 'tab',
-        lifetime: 'visible',
-        Content: EditorView,
-      })
+      disposers.push(
+        context.documents.subscribe((event) => {
+          if (event.kind === 'closed') {
+            forgetDocumentView(event.target.documentId)
+            return
+          }
+          const entry = documentViews.get(event.metadata.tabId)
+          if (entry) entry.documentId = event.metadata.target.documentId
+        }),
+      )
 
       disposers.push(
         context.editor.registerDocumentFormat({
@@ -422,8 +481,15 @@ export default ({ React, ui }) => {
       flushEditorSessions()
       saveEditorSessions()
       for (const dispose of disposers.splice(0).reverse()) dispose()
-      view?.dispose()
-      view = null
+      for (const entry of viewRegistrations) {
+        try {
+          entry.registration.dispose()
+        } catch (error) {
+          console.warn('Could not dispose the Excalidraw view:', error)
+        }
+      }
+      viewRegistrations.clear()
+      documentViews.clear()
       context = null
       lastDocument = null
       autoOpened.clear()

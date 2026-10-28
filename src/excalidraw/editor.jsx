@@ -12,6 +12,10 @@ import { registerEditorSession } from './editor-registry.js'
 import { parseObsidianDrawing, normalizeObsidianIds } from './obsidian.js'
 import { loadObsidianFiles, writeObsidianFiles } from './obsidian-files.js'
 import {
+  canvasMeasure,
+  layoutBoundText,
+} from './text-layout.js'
+import {
   MAX_SOURCE_BYTES,
   minimalChange,
   scenesEquivalent,
@@ -59,10 +63,20 @@ function issueTitle(issue) {
   }
 }
 
-function restoreScene(data, theme) {
-  const restored = restore(data, null, null, { repairBindings: true })
+function restoreScene(data, theme, kind) {
+  const restored = restore(data, null, null, {
+    repairBindings: true,
+    refreshDimensions: kind !== 'obsidian',
+  })
+  const elements =
+    kind === 'obsidian'
+      ? layoutBoundText(
+          { elements: restored.elements },
+          canvasMeasure(),
+        ).elements
+      : restored.elements
   return {
-    elements: restored.elements,
+    elements,
     appState: {
       ...restored.appState,
       theme,
@@ -72,14 +86,31 @@ function restoreScene(data, theme) {
   }
 }
 
-function Canvas({ context, document, kind }) {
+function liveMarkdown(context, document, binding) {
+  if (binding !== 'pinned') return document.markdown
+  try {
+    const metadata = context.documents
+      .listOpen()
+      .find((entry) => entry.tabId === document.tabId)
+    if (!metadata) return document.markdown
+    const read = context.documents.readSource(metadata.target)
+    return read.status === 'read' ? read.source : document.markdown
+  } catch {
+    return document.markdown
+  }
+}
+
+function Canvas({ context, document, kind, binding }) {
   const rootRef = React.useRef(null)
   const portalHostRef = React.useRef(null)
   const apiRef = React.useRef(null)
   const latestRef = React.useRef(null)
   const structureRef = React.useRef(null)
-  const sourceRef = React.useRef(document.markdown)
-  const initialSourceRef = React.useRef(document.markdown)
+  const initialSourceRef = React.useRef(null)
+  if (initialSourceRef.current === null) {
+    initialSourceRef.current = liveMarkdown(context, document, binding)
+  }
+  const sourceRef = React.useRef(initialSourceRef.current)
   const interactedRef = React.useRef(false)
   const dirtyRef = React.useRef(false)
   const pointerActiveRef = React.useRef(false)
@@ -106,7 +137,7 @@ function Canvas({ context, document, kind }) {
     if (!loaded.ok) return { error: loaded.error }
     structureRef.current = loaded.parsed
     try {
-      return { data: restoreScene(loaded.data, themeRef.current) }
+      return { data: restoreScene(loaded.data, themeRef.current, kind) }
     } catch (error) {
       return {
         error: {
@@ -486,7 +517,7 @@ function Canvas({ context, document, kind }) {
       return
     }
     try {
-      const next = restoreScene(loaded.data, themeRef.current)
+      const next = restoreScene(loaded.data, themeRef.current, kind)
       structureRef.current = loaded.parsed
       suppressUntilRef.current = performance.now() + 150
       if (Object.keys(next.files).length) {
@@ -545,6 +576,39 @@ function Canvas({ context, document, kind }) {
     }
   }, [apiReady, kind, document.tabId])
 
+  React.useEffect(() => {
+    if (!apiReady || kind !== 'obsidian') return
+    let active = true
+    const refresh = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      if (!active || !apiRef.current) return
+      const latest = latestRef.current
+      if (!latest) return
+      try {
+        const laidOut = layoutBoundText(
+          { elements: latest.elements },
+          canvasMeasure(),
+        )
+        suppressUntilRef.current = performance.now() + 200
+        apiRef.current.updateScene(
+          { elements: laidOut.elements, appState: latest.appState },
+          { captureUpdate: CaptureUpdateAction.NEVER },
+        )
+        latestRef.current = {
+          elements: laidOut.elements,
+          appState: latest.appState,
+          files: latest.files,
+        }
+      } catch (error) {
+        console.warn('Could not refresh Excalidraw text metrics:', error)
+      }
+    }
+    void refresh()
+    return () => {
+      active = false
+    }
+  }, [apiReady, kind])
+
   const reload = () => {
     const metadata = context.documents
       .listOpen()
@@ -560,7 +624,7 @@ function Canvas({ context, document, kind }) {
       return
     }
     try {
-      const next = restoreScene(loaded.data, themeRef.current)
+      const next = restoreScene(loaded.data, themeRef.current, kind)
       structureRef.current = loaded.parsed
       suppressUntilRef.current = performance.now() + 150
       if (Object.keys(next.files).length) {
@@ -595,7 +659,7 @@ function Canvas({ context, document, kind }) {
       flushRef.current(true)
       return
     }
-    initialSourceRef.current = document.markdown
+    initialSourceRef.current = liveMarkdown(context, document, binding)
     setAttempt((value) => value + 1)
   }
 
@@ -661,7 +725,13 @@ function Canvas({ context, document, kind }) {
   if (initial.error) {
     return React.createElement(
       'div',
-      { className: 'hibi-excalidraw-root', dir: 'ltr', ref: rootRef },
+      {
+        className: 'hibi-excalidraw-root',
+        dir: 'ltr',
+        ref: rootRef,
+        'data-hibi-excalidraw-document': document.name,
+        'data-hibi-excalidraw-tab': document.tabId,
+      },
       React.createElement(
         'div',
         { className: 'hibi-excalidraw-error' },
@@ -687,7 +757,13 @@ function Canvas({ context, document, kind }) {
 
   return React.createElement(
     'div',
-    { className: 'hibi-excalidraw-root', dir: 'ltr', ref: rootRef },
+    {
+      className: 'hibi-excalidraw-root',
+      dir: 'ltr',
+      ref: rootRef,
+      'data-hibi-excalidraw-document': document.name,
+      'data-hibi-excalidraw-tab': document.tabId,
+    },
     React.createElement('div', {
       className: 'hibi-excalidraw-portals',
       ref: portalHostRef,
@@ -720,7 +796,7 @@ function Canvas({ context, document, kind }) {
 }
 
 export function Editor(props) {
-  const { context, document } = props
+  const { context, document, binding } = props
 
   if (!document) {
     return React.createElement(
@@ -750,9 +826,10 @@ export function Editor(props) {
   }
 
   return React.createElement(Canvas, {
-    key: `${document.tabId}:${kind}`,
+    key: `${document.tabId}:${kind}:${binding}`,
     context,
     document,
     kind,
+    binding,
   })
 }

@@ -107,6 +107,13 @@ test('the addon registers its format, tab, commands, and patches', async () => {
   }
 
   const addon = create({ React, ui: { Button: () => null } })
+  const document = {
+    tabId: 'tab-1',
+    name: 'drawing.excalidraw',
+    markdown: '{}',
+    revision: 1,
+    contentVersion: 1,
+  }
   await addon.start({
     editor: {
       registerDocumentFormat: (format) => {
@@ -114,10 +121,10 @@ test('the addon registers its format, tab, commands, and patches', async () => {
         return disposer
       },
       onDocumentChange: (listener) => {
-        listener(null)
+        listener(document)
         return disposer
       },
-      getDocument: () => null,
+      getDocument: () => document,
     },
     views: {
       register: (view) => {
@@ -152,7 +159,11 @@ test('the addon registers its format, tab, commands, and patches', async () => {
       getActive: () => ({ appearance: 'light' }),
       subscribe: () => disposer,
     },
-    documents: { listOpen: () => [], readSource: () => ({ status: 'missing' }) },
+    documents: {
+      listOpen: () => [],
+      readSource: () => ({ status: 'missing' }),
+      subscribe: () => disposer,
+    },
     workspace: {},
   })
 
@@ -240,7 +251,11 @@ test('the new drawing command avoids overwriting existing files', async () => {
       getActive: () => ({ appearance: 'light' }),
       subscribe: () => disposer,
     },
-    documents: { listOpen: () => [], readSource: () => ({ status: 'missing' }) },
+    documents: {
+      listOpen: () => [],
+      readSource: () => ({ status: 'missing' }),
+      subscribe: () => disposer,
+    },
     workspace: {
       get: async () => ({ id: 'workspace', workspaceGeneration: 1 }),
       createText: async (_target, path) => {
