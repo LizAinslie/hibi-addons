@@ -9,14 +9,13 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "build:excalidraw": "node scripts/build-excalidraw.mjs",
+    "build": "pnpm -r --if-present build",
+    "build:excalidraw": "pnpm --filter hibi-addon-excalidraw build",
+    "dev:excalidraw": "pnpm --filter hibi-addon-excalidraw dev",
     "check": "node scripts/check.mjs",
-    "test": "node --test"
+    "test": "pnpm --filter hibi-addon-excalidraw test && node --test test/*.test.mjs"
   },
   "devDependencies": {
-    "@excalidraw/excalidraw": "0.18.1",
-    "esbuild": "^0.28.2",
-    "lz-string": "^1.5.0",
     "postcss": "^8.5.31"
   }
 }

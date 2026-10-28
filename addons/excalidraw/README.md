@@ -9,7 +9,14 @@ The drawing stays in the file. Hibi is the only storage layer.
 
 ## Install
 
-Install the folder or ZIP, then enable **Excalidraw** in **Settings → Addons**. Hibi asks for confirmation because the package is unsigned.
+This package is unsigned. Turn on **Allow unsigned addons** under **Settings → Addon Manager → Security**, then:
+
+1. Run **Install addon…** from Hibi's command palette.
+2. Select this folder or its ZIP.
+3. Review the extension and install it. Hibi installs addons turned off.
+4. Enable **Excalidraw** in **Settings → Addons**.
+
+Hibi asks for confirmation because the package is unsigned. After changing the package, install it again; Hibi replaces the installed copy after you confirm.
 
 ## Use
 
@@ -41,15 +48,17 @@ New images from the canvas are written to an `assets/` folder next to the drawin
 
 ## Development
 
+The installed package lives in `addons/excalidraw/`. Source lives in `packages/excalidraw/src/`. Edit the source, then regenerate the package:
+
 ```sh
 pnpm install
-pnpm run build:excalidraw
+pnpm build:excalidraw
 pnpm run check
 pnpm test
 ```
 
-`pnpm run build:excalidraw` regenerates the installed files under `addons/excalidraw/` and enforces Hibi's package limits. Source lives in `src/excalidraw/`.
+`pnpm build:excalidraw` runs Vite and enforces Hibi's package limits. `pnpm dev:excalidraw` rebuilds on change. Vite watch does not hot-reload Hibi; reinstall or reload the addon in Hibi after a rebuild. Do not edit the generated `index.js`, `editor.js`, `chunks/`, `fonts/`, `excalidraw.css`, or `host.css` by hand; edit `packages/excalidraw/src/` instead.
 
-## Licenses
+## License
 
-Excalidraw is MIT licensed. The bundled fonts are distributed under the SIL Open Font License. Excalidraw's runtime dependencies remain under their upstream licenses. See `THIRD-PARTY.txt` and the license list shown in Hibi.
+This addon is available under the [MIT License](LICENSE.txt). Excalidraw is MIT licensed. The bundled fonts are distributed under the SIL Open Font License. Excalidraw's runtime dependencies remain under their upstream licenses. See [THIRD-PARTY.txt](THIRD-PARTY.txt) and the license list shown in Hibi.

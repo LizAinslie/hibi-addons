@@ -385,3 +385,171 @@ Verified against the Hibi `v0.2.1` build with two `.excalidraw.md` files open:
 - Returning to each named tab shows the correct drawing.
 - Text blocks reflow and fit their containers; no clipping in the tested vault file.
 - Native `.excalidraw`, Obsidian open/edit/save, undo/redo (native), fonts, and preview all remain green.
+
+## Build/DX refactor: pnpm workspace + Vite
+
+Goal: make `packages/<id>/` the source package and `addons/<id>/` the committed installable bundle, with Vite as the build tool and pnpm deduping shared tooling. Keep the current Excalidraw behavior and generated package committed.
+
+### Target layout
+
+```text
+package.json                         workspace scripts
+pnpm-workspace.yaml                  packages/*
+packages/excalidraw/
+  package.json                       private workspace package
+  vite.config.mjs
+  src/                               moved from src/excalidraw
+  test/                              optional; root tests may remain
+addons/excalidraw/                   installable generated package
+  hibi-addon.json
+  README.md, LICENSE.txt, THIRD-PARTY.txt
+  index.js, editor.js, chunks/, fonts/, CSS
+scripts/check.mjs                    repository package check
+build/                               shared Vite addon plugin/CSS/limit helpers
+test/                                cross-cutting repository tests
+```
+
+- Source never lives inside `addons/<id>/`; Hibi installs every allowed file in the package folder and may reject unsupported source extensions.
+- Keep `addons/excalidraw/hibi-addon.json`, README, and licenses authored, not generated.
+- The package name can be private, e.g. `hibi-addon-excalidraw`; the manifest ID stays `excalidraw`.
+
+### Workspace
+
+- `pnpm-workspace.yaml`: add `packages: ['packages/*']`; keep `allowBuilds: { esbuild: true }`.
+- `packages/excalidraw/package.json`:
+  - `private: true`, `type: "module"`.
+  - `dependencies`: `@excalidraw/excalidraw@0.18.1`, `lz-string`.
+  - `devDependencies`: `vite`, `postcss`.
+  - `scripts`: `build: "vite build"`, `dev: "vite build --watch"`.
+- Root `package.json`:
+  - Remove `@excalidraw/excalidraw`, `esbuild`, and `lz-string` from root devDependencies; move to the package.
+  - Keep `vite`/`postcss` in the package; root only orchestrates.
+  - Scripts:
+    - `build`: build all workspace packages (`pnpm -r --if-present build`).
+    - `build:excalidraw`: `pnpm --filter hibi-addon-excalidraw build`.
+    - `dev:excalidraw`: `pnpm --filter hibi-addon-excalidraw dev`.
+    - `check`: existing `node scripts/check.mjs`.
+    - `test`: existing `node --test`.
+- Update lockfile with `pnpm install`; do not commit `node_modules`.
+
+### Vite build
+
+Two entries: `src/index.js` (addon factory, small) and `src/editor.jsx` (lazy Excalidraw editor). Do not statically import the editor or Excalidraw from the addon entry.
+
+`packages/excalidraw/vite.config.mjs`:
+
+- `root` = package directory.
+- `base: './'`.
+- `build.outDir` = `../../addons/excalidraw`.
+- `build.emptyOutDir: false`; the plugin removes only generated files.
+- `build.copyPublicDir: false`.
+- `build.sourcemap: false`, `build.minify: 'esbuild'`, `build.target: 'es2022'`.
+- `build.modulePreload: false`.
+- `build.assetsInlineLimit: 0`.
+- `build.rollupOptions.preserveEntrySignatures: 'strict'`.
+- `build.rollupOptions.input`: absolute paths to `index.js` and `editor.jsx`.
+- `build.rollupOptions.output`:
+  - `entryFileNames: '[name].js'`
+  - `chunkFileNames: 'chunks/[name]-[hash].js'`
+  - `assetFileNames: 'assets/[name]-[hash][extname]'`
+- `define: { 'process.env.NODE_ENV': '"production"' }`.
+- `esbuild: { jsx: 'transform', jsxFactory: 'React.createElement', jsxFragment: 'React.Fragment' }`.
+- Resolve React/ReactDOM through the existing host shims:
+  - `react` -> `src/shims/react.js`
+  - `react/jsx-runtime` and `react/jsx-dev-runtime` -> `src/shims/jsx-runtime.js`
+  - `react-dom` -> `src/shims/react-dom.js`
+  - `react-dom/client` -> `src/shims/react-dom-client.js`
+  - Use a Vite `resolveId` plugin for exact/subpath matching, equivalent to the current esbuild alias plugin.
+- Verify the built entry does not import the shim chunk before `start()` sets `globalThis.__hibiExcalidrawReact`.
+
+### Shared build plugin
+
+Add `build/vite-addon.mjs` exporting a `hibiAddon` plugin/config helper used by Excalidraw and future addons:
+
+- Cleanup on `buildStart`:
+  - Remove `index.js`, `editor.js`, `chunks/`, `assets/`, `fonts/`, `excalidraw.css`, `host.css`.
+  - Preserve manifest, README, licenses, and third-party notices.
+- On `closeBundle`:
+  - Copy `@excalidraw/excalidraw/dist/prod/fonts` to `addons/excalidraw/fonts` preserving `fonts/<family>/<file>` names.
+  - Read `@excalidraw/excalidraw/dist/prod/index.css`, apply the existing PostCSS scoping/keyframe transform, write `excalidraw.css`.
+  - Copy `src/host.css` to `host.css`.
+  - Enforce Hibi limits: 1,000 entries, 25 MiB total, 5 MiB/file, 64 KiB manifest.
+  - Reject unsupported output extensions (`.map`, `.wasm`, `.html`, etc.) and fail with the offending path.
+- Move the CSS scoping code and package-limit checker out of `scripts/build-excalidraw.mjs` into shared build modules.
+- Do not let Vite process/hash Excalidraw CSS or fonts; fixed names and unhashed font paths are required by the manifest and `EXCALIDRAW_ASSET_PATH`.
+
+### Migration tasks
+
+1. Create `packages/excalidraw/` and move `src/excalidraw/*` there with `git mv`; update imports in tests and config.
+2. Add workspace/package manifests, lockfile, and root scripts.
+3. Add the Vite config and shared plugin; keep the current esbuild build available until the spike passes.
+4. Spike:
+   - Build Vite output to a temporary directory or rebuild the committed package and use git to restore if needed.
+   - Copy manifest/docs into the temp package and install in Hibi.
+   - Verify `index.js` doesn't preload the editor/React shim, fonts resolve from the package path, chunks load, and no CSP/network errors.
+   - Run native `.excalidraw`, Obsidian `.excalidraw.md`, and two-file tab/source smokes against Hibi v0.2.1 and the nightly build.
+5. Replace `addons/excalidraw` generated files with the Vite output; remove `scripts/build-excalidraw.mjs` and esbuild-specific deps once green.
+6. Update `README.md` and `addons/excalidraw/README.md`:
+   - Source lives in `packages/excalidraw/src`.
+   - `pnpm build` / `pnpm build:excalidraw`; `pnpm dev:excalidraw` watch rebuilds.
+   - Vite watch does not hot-reload Hibi; after a rebuild, reinstall/reload the addon in Hibi.
+7. Update tests:
+   - Source tests import `../packages/excalidraw/src/...` (or move to `packages/excalidraw/test`).
+   - Built-entry tests continue importing `addons/excalidraw/index.js`.
+   - Keep `test/repository.test.mjs` package validation.
+
+### Validation
+
+- `pnpm install --frozen-lockfile`
+- `pnpm build`
+- `pnpm check`
+- `pnpm test`
+- Verify output has only Hibi-supported extensions, no source maps/wasm/html, and stays within package limits.
+- Hibi v0.2.1 and nightly smokes:
+  - Native `.excalidraw`: open, draw, save, undo/redo, text, fonts, preview.
+  - Obsidian `.excalidraw.md`: open real vault file, edit/save, preserve header/wiki links/block refs.
+  - Multi-file named tabs and source switching.
+  - No external network requests or CSP errors.
+- Confirm a clean rebuild is reproducible and `git diff` contains only expected generated files.
+
+### Risks / fallback
+
+- Vite/Rollup may emit or externalize workers/wasm/assets that Hibi rejects. If so, configure Vite to inline or omit the offending path, or retain the esbuild bundle temporarily.
+- Vite must not bundle a second React or let the addon entry evaluate the host-React shim before `start()`.
+- Font path/name rewriting and CSS scoping must stay exact; do not rely on Vite CSS asset hashing.
+- `emptyOutDir: false` and cleanup must never delete authored manifest/README/license files.
+- If Vite cannot produce a Hibi-compatible package after the spike, keep the workspace layout and revert the Excalidraw build script to esbuild; document the blocker rather than shipping a broken bundle.
+
+### Out of scope
+
+- HMR in Hibi; watch builds still require reinstall/reload.
+- TypeScript conversion of the addon source.
+- CI publishing/signing or new addon implementations.
+- The Hibi nightly `.editor-page`/status-bar collapse bug; file separately.
+
+### Build/DX implementation status
+
+Implemented:
+
+- `packages/excalidraw/` workspace package with `src/`, `test/`, `vite.config.mjs`, and package-local `@excalidraw/excalidraw`/`lz-string`/Vite dependencies.
+- `addons/excalidraw/` remains the committed installable bundle; authored manifest/README/licenses are preserved.
+- Root `pnpm-workspace.yaml` includes `packages/*`; root scripts provide `build`, `build:excalidraw`, `dev:excalidraw`, `check`, and `test`.
+- Shared `build/vite-addon.mjs` provides React-host shims, generated-file cleanup, optional CSS scoping, optional font copying, and package-size/type checks after a successful Vite write. Excalidraw passes its prefix/font/CSS options; future addons can reuse the helper without Excalidraw-specific paths.
+- Two-entry ESM Vite output: `index.js`, lazy `editor.js`, chunks, fonts, and fixed CSS names.
+- `EXCALIDRAW_ASSET_PATH` is derived from `import.meta.url` without Vite rewriting it as an asset.
+- Tests moved into the package; the built-entry registration test still covers `addons/excalidraw/index.js`.
+- READMEs updated for the workspace/source layout and Vite commands.
+
+Verified:
+
+- `pnpm build` produces 368 entries, 20.0 MiB total, largest 1778 KiB.
+- `npm test` passes 17 package tests + 4 repository tests.
+- `npm run check` passes.
+- Native `.excalidraw`, Obsidian `.excalidraw.md`, and multi-drawing named-tab/source-switching smokes pass against Hibi v0.2.1 with the Vite bundle.
+- Native and Obsidian smokes pass on the local Hibi build; fonts load locally and no external requests/CSP errors occur.
+
+Known build notes:
+
+- A failed Vite build removes the previous generated bundle at `buildStart`; committed output can be restored from git. A future improvement is to build to a temporary directory and sync only on success.
+- Vite still resolves peer React 18 inside `@excalidraw/excalidraw`'s package, but the bundle aliases all React imports to Hibi's host shims and does not ship it.
+- Vite watch rebuilds the package but Hibi still needs reinstall/reload for changes to appear.
