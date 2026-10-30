@@ -3,7 +3,7 @@
   "name": "Excalidraw",
   "description": "Edit .excalidraw and Obsidian .excalidraw.md drawings as Hibi documents.",
   "version": "0.2.0",
-  "apiVersion": 2,
+  "apiVersion": 3,
   "kind": "extension",
   "capabilities": ["ui"],
   "fileExtensions": ["excalidraw"],
