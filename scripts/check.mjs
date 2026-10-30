@@ -136,8 +136,8 @@ export function checkRepository(root) {
     for (const key of ['name', 'description', 'version'])
       if (typeof manifest[key] !== 'string' || !manifest[key].trim())
         throw new Error(`${label}: add a ${key}.`)
-    if (manifest.apiVersion !== 2)
-      throw new Error(`${label}: set "apiVersion": 2.`)
+    if (manifest.apiVersion !== 3)
+      throw new Error(`${label}: set "apiVersion": 3.`)
     if (
       !manifest.authors?.length ||
       manifest.authors.some((author) => !author?.displayName?.trim())
